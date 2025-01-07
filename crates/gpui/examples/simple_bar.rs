@@ -1,6 +1,6 @@
 use gpui::{
-    div, prelude::*, px, rgb, size, Anchor, App, AppContext, Bounds, Layer, LayerShellSettings,
-    SharedString, ViewContext, WindowBounds, WindowKind, WindowOptions,
+    div, point, prelude::*, px, rgb, size, Anchor, App, AppContext, Bounds, Layer,
+    LayerShellSettings, SharedString, ViewContext, WindowBounds, WindowKind, WindowOptions,
 };
 
 struct HelloWorld {
@@ -19,9 +19,6 @@ impl Render for HelloWorld {
             .py_3()
             .px_3()
             .bg(rgb(0x505050))
-            .border_1()
-            .border_color(rgb(0x0000ff))
-            .text_color(rgb(0xffffff))
             .child(
                 div()
                     .flex()
@@ -29,6 +26,9 @@ impl Render for HelloWorld {
                     .items_center()
                     .gap_3()
                     .overflow_x_hidden()
+                    .border_1()
+                    .border_color(rgb(0x0000ff))
+                    .text_color(rgb(0xffffff))
                     .child(format!("hello, {}!", &self.text)),
             )
             .child(
@@ -49,11 +49,15 @@ impl Render for HelloWorld {
 
 fn main() {
     App::new().run(|cx: &mut AppContext| {
-        let bounds = Bounds::centered(None, size(px(1000.), px(50.0)), cx);
+        let height = px(50.0);
+        let bounds = Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(1440.), height),
+        };
         let layer_shell_settings = LayerShellSettings {
             layer: Layer::Top,
             anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
-            exclusive_zone: Some(px(50.0)),
+            exclusive_zone: Some(height),
             ..Default::default()
         };
         cx.open_window(
