@@ -28,7 +28,7 @@ use crate::{
         linux::wayland::{display::WaylandDisplay, serial::SerialKind},
         PlatformAtlas, PlatformInputHandler, PlatformWindow,
     },
-    WindowKind,
+    KeyboardInteractivity, WindowKind,
 };
 use crate::{
     px, size, AnyWindowHandle, Bounds, Decorations, Globals, GpuSpecs, Modifiers, Output, Pixels,
@@ -79,20 +79,6 @@ struct InProgressConfigure {
     tiling: Tiling,
 }
 
-impl TryFrom<zwlr_layer_shell_v1::Layer> for Layer {
-    type Error = anyhow::Error;
-
-    fn try_from(layer: zwlr_layer_shell_v1::Layer) -> Result<Self, Self::Error> {
-        match layer {
-            zwlr_layer_shell_v1::Layer::Background => Ok(Layer::Background),
-            zwlr_layer_shell_v1::Layer::Bottom => Ok(Layer::Bottom),
-            zwlr_layer_shell_v1::Layer::Top => Ok(Layer::Top),
-            zwlr_layer_shell_v1::Layer::Overlay => Ok(Layer::Overlay),
-            _ => Err(anyhow::anyhow!("Unknown layer")),
-        }
-    }
-}
-
 impl From<Layer> for zwlr_layer_shell_v1::Layer {
     fn from(layer: Layer) -> Self {
         match layer {
@@ -100,6 +86,16 @@ impl From<Layer> for zwlr_layer_shell_v1::Layer {
             Layer::Bottom => Self::Bottom,
             Layer::Top => Self::Top,
             Layer::Overlay => Self::Overlay,
+        }
+    }
+}
+
+impl From<KeyboardInteractivity> for zwlr_layer_surface_v1::KeyboardInteractivity {
+    fn from(interactivity: KeyboardInteractivity) -> Self {
+        match interactivity {
+            KeyboardInteractivity::None => Self::None,
+            KeyboardInteractivity::Exclusive => Self::Exclusive,
+            KeyboardInteractivity::OnDemand => Self::OnDemand,
         }
     }
 }
@@ -346,6 +342,8 @@ impl WaylandWindow {
                 params.bounds.size.width.0 as u32,
                 params.bounds.size.height.0 as u32,
             );
+            layer_surface
+                .set_keyboard_interactivity(layer_shell_settings.keyboard_interactivity.into());
             if let Some(exclusive_zone) = layer_shell_settings.exclusive_zone {
                 layer_surface.set_exclusive_zone(exclusive_zone.0 as i32);
             }

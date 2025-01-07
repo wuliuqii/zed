@@ -1051,6 +1051,18 @@ bitflags! {
     }
 }
 
+/// Types of keyboard interaction possible for a layer shell surface
+#[cfg(feature = "wayland")]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum KeyboardInteractivity {
+    /// No keyboard focus is possible
+    None,
+    ///Request exclusive keyboard focus
+    Exclusive,
+    /// Request regular keyboard focus semantics
+    OnDemand,
+}
+
 /// Settings for a layer shell surface
 #[cfg(feature = "wayland")]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1063,6 +1075,8 @@ pub struct LayerShellSettings {
     pub exclusive_zone: Option<Pixels>,
     /// The distance away from the anchor point
     pub margin: Option<(Pixels, Pixels, Pixels, Pixels)>,
+    /// Types of keyboard interaction possible for layer shell surfaces
+    pub keyboard_interactivity: KeyboardInteractivity,
 }
 
 impl Default for LayerShellSettings {
@@ -1072,6 +1086,7 @@ impl Default for LayerShellSettings {
             anchor: Anchor::RIGHT | Anchor::LEFT,
             exclusive_zone: None,
             margin: None,
+            keyboard_interactivity: KeyboardInteractivity::None,
         }
     }
 }

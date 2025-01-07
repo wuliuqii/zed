@@ -58,6 +58,7 @@ fn main() {
             layer: Layer::Top,
             anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
             exclusive_zone: Some(height),
+            keyboard_interactivity: gpui::KeyboardInteractivity::OnDemand,
             ..Default::default()
         };
         cx.open_window(
