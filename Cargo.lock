@@ -5315,6 +5315,7 @@ dependencies = [
  "async-task",
  "backtrace",
  "bindgen",
+ "bitflags 2.6.0",
  "blade-graphics",
  "blade-macros",
  "blade-util",

@@ -45,6 +45,7 @@ wayland = [
   "wayland-protocols",
   "wayland-protocols-plasma",
   "wayland-protocols-wlr",
+  "bitflags",
   "filedescriptor",
   "xkbcommon",
   "open",
@@ -173,6 +174,7 @@ filedescriptor = { version = "0.8.2", optional = true }
 open = { version = "5.2.0", optional = true }
 
 # Wayland
+bitflags = { workspace = true, optional = true }
 calloop-wayland-source = { version = "0.3.0", optional = true }
 wayland-backend = { version = "0.3.3", features = [
   "client_system",

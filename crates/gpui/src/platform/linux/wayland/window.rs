@@ -20,21 +20,23 @@ use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1
 use wayland_protocols::xdg::shell::client::xdg_surface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self};
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{self, Anchor};
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
-use crate::platform::{
-    blade::{BladeContext, BladeRenderer, BladeSurfaceConfig},
-    linux::wayland::{display::WaylandDisplay, serial::SerialKind},
-    PlatformAtlas, PlatformInputHandler, PlatformWindow,
+use crate::{
+    platform::{
+        blade::{BladeContext, BladeRenderer, BladeSurfaceConfig},
+        linux::wayland::{display::WaylandDisplay, serial::SerialKind},
+        PlatformAtlas, PlatformInputHandler, PlatformWindow,
+    },
+    WindowKind,
 };
-use crate::scene::Scene;
 use crate::{
     px, size, AnyWindowHandle, Bounds, Decorations, Globals, GpuSpecs, Modifiers, Output, Pixels,
     PlatformDisplay, PlatformInput, Point, PromptLevel, RequestFrameOptions, ResizeEdge,
     ScaledPixels, Size, Tiling, WaylandClientStatePtr, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowParams,
 };
+use crate::{scene::Scene, Layer};
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
@@ -75,6 +77,31 @@ struct InProgressConfigure {
     fullscreen: bool,
     maximized: bool,
     tiling: Tiling,
+}
+
+impl TryFrom<zwlr_layer_shell_v1::Layer> for Layer {
+    type Error = anyhow::Error;
+
+    fn try_from(layer: zwlr_layer_shell_v1::Layer) -> Result<Self, Self::Error> {
+        match layer {
+            zwlr_layer_shell_v1::Layer::Background => Ok(Layer::Background),
+            zwlr_layer_shell_v1::Layer::Bottom => Ok(Layer::Bottom),
+            zwlr_layer_shell_v1::Layer::Top => Ok(Layer::Top),
+            zwlr_layer_shell_v1::Layer::Overlay => Ok(Layer::Overlay),
+            _ => Err(anyhow::anyhow!("Unknown layer")),
+        }
+    }
+}
+
+impl From<Layer> for zwlr_layer_shell_v1::Layer {
+    fn from(layer: Layer) -> Self {
+        match layer {
+            Layer::Background => Self::Background,
+            Layer::Bottom => Self::Bottom,
+            Layer::Top => Self::Top,
+            Layer::Overlay => Self::Overlay,
+        }
+    }
 }
 
 pub struct WaylandWindowState {
@@ -278,41 +305,59 @@ impl WaylandWindow {
         appearance: WindowAppearance,
     ) -> anyhow::Result<(Self, ObjectId)> {
         let surface = globals.compositor.create_surface(&globals.qh, ());
-        // let xdg_surface = globals
-        //     .wm_base
-        //     .get_xdg_surface(&surface, &globals.qh, surface.id());
-        // let toplevel = xdg_surface.get_toplevel(&globals.qh, surface.id());
-        //
-        // if let Some(size) = params.window_min_size {
-        //     toplevel.set_min_size(size.width.0 as i32, size.height.0 as i32);
-        // }
 
-        let layer_surface = globals.layer_shell.get_layer_surface(
-            &surface,
-            None,
-            Layer::Top,
-            "layer_surface".to_string(),
-            &globals.qh,
-            surface.id(),
-        );
-        layer_surface.set_anchor(Anchor::Left | Anchor::Right);
-        log::info!("Creating window with bounds: {:?}", params.bounds);
-        layer_surface.set_size(
-            params.bounds.size.width.0 as u32,
-            params.bounds.size.height.0 as u32,
-        );
+        let (xdg_surface, toplevel, decoration) = if params.kind == WindowKind::Normal {
+            let xdg_surface = globals
+                .wm_base
+                .get_xdg_surface(&surface, &globals.qh, surface.id());
+            let toplevel = xdg_surface.get_toplevel(&globals.qh, surface.id());
+
+            if let Some(size) = params.window_min_size {
+                toplevel.set_min_size(size.width.0 as i32, size.height.0 as i32);
+            }
+
+            // Attempt to set up window decorations based on the requested configuration
+            let decoration = globals
+                .decoration_manager
+                .as_ref()
+                .map(|decoration_manager| {
+                    decoration_manager.get_toplevel_decoration(&toplevel, &globals.qh, surface.id())
+                });
+
+            (Some(xdg_surface), Some(toplevel), decoration)
+        } else {
+            (None, None, None)
+        };
+
+        let layer_surface = if let WindowKind::LayerShell(layer_shell_settings) = params.kind {
+            let layer_surface = globals.layer_shell.get_layer_surface(
+                &surface,
+                None,
+                layer_shell_settings.layer.into(),
+                // TODO: namespace
+                "layer_surface".to_string(),
+                &globals.qh,
+                surface.id(),
+            );
+            layer_surface.set_anchor(zwlr_layer_surface_v1::Anchor::from_bits_truncate(
+                layer_shell_settings.anchor.bits(),
+            ));
+            layer_surface.set_size(
+                params.bounds.size.width.0 as u32,
+                params.bounds.size.height.0 as u32,
+            );
+            if let Some(exclusive_zone) = layer_shell_settings.exclusive_zone {
+                layer_surface.set_exclusive_zone(exclusive_zone.0 as i32);
+            }
+
+            Some(layer_surface)
+        } else {
+            None
+        };
 
         if let Some(fractional_scale_manager) = globals.fractional_scale_manager.as_ref() {
             fractional_scale_manager.get_fractional_scale(&surface, &globals.qh, surface.id());
         }
-
-        // Attempt to set up window decorations based on the requested configuration
-        // let decoration = globals
-        //     .decoration_manager
-        //     .as_ref()
-        //     .map(|decoration_manager| {
-        //         decoration_manager.get_toplevel_decoration(&toplevel, &globals.qh, surface.id())
-        //     });
 
         let viewport = globals
             .viewporter
@@ -323,10 +368,10 @@ impl WaylandWindow {
             state: Rc::new(RefCell::new(WaylandWindowState::new(
                 handle,
                 surface.clone(),
-                None,
-                Some(layer_surface),
-                None,
-                None,
+                xdg_surface,
+                layer_surface,
+                toplevel,
+                decoration,
                 appearance,
                 viewport,
                 client,
@@ -369,14 +414,14 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn handle_xdg_surface_event(&self, event: xdg_surface::Event) {
-        if self.state.borrow_mut().xdg_surface.is_none() {
+        let mut state = self.state.borrow_mut();
+        if state.xdg_surface.is_none() {
             log::error!("xdg_surface is missing");
             return;
         }
-        let mut state = self.state.borrow_mut();
-        let mut xdg_surface = state.xdg_surface.as_ref().unwrap();
         match event {
             xdg_surface::Event::Configure { serial } => {
+                drop(state);
                 {
                     let mut state = self.state.borrow_mut();
                     if let Some(window_controls) = state.in_progress_window_controls.take() {
@@ -418,6 +463,7 @@ impl WaylandWindowStatePtr {
                     }
                 }
                 let mut state = self.state.borrow_mut();
+                let xdg_surface = state.xdg_surface.as_ref().unwrap();
                 xdg_surface.ack_configure(serial);
 
                 let window_geometry = inset_by_tiling(
@@ -447,18 +493,18 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn handle_layer_surface(&self, event: zwlr_layer_surface_v1::Event) {
-        if self.state.borrow_mut().layer_surface.is_none() {
-            log::error!("layer surface is missing");
+        let mut state = self.state.borrow_mut();
+        if state.layer_surface.is_none() {
+            log::error!("layer_surface is missing");
             return;
         }
-        let mut state = self.state.borrow_mut();
-        let mut layer_surface = state.layer_surface.as_ref().unwrap();
         match event {
             zwlr_layer_surface_v1::Event::Configure {
                 serial,
                 width,
                 height,
             } => {
+                let layer_surface = state.layer_surface.as_ref().unwrap();
                 layer_surface.ack_configure(serial);
                 layer_surface.set_size(width, height);
 
