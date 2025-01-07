@@ -344,6 +344,14 @@ impl WaylandWindow {
             );
             layer_surface
                 .set_keyboard_interactivity(layer_shell_settings.keyboard_interactivity.into());
+            if let Some(margin) = layer_shell_settings.margin {
+                layer_surface.set_margin(
+                    margin.0 .0 as i32,
+                    margin.1 .0 as i32,
+                    margin.2 .0 as i32,
+                    margin.3 .0 as i32,
+                );
+            }
             if let Some(exclusive_zone) = layer_shell_settings.exclusive_zone {
                 layer_surface.set_exclusive_zone(exclusive_zone.0 as i32);
             }
