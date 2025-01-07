@@ -265,3 +265,7 @@ path = "examples/opacity.rs"
 [[example]]
 name = "uniform_list"
 path = "examples/uniform_list.rs"
+
+[[example]]
+name = "simple_bar"
+path = "examples/simple_bar.rs"

@@ -1,0 +1,73 @@
+use gpui::{
+    div, prelude::*, px, rgb, size, Anchor, App, AppContext, Bounds, Layer, LayerShellSettings,
+    SharedString, ViewContext, WindowBounds, WindowKind, WindowOptions,
+};
+
+struct HelloWorld {
+    text: SharedString,
+}
+
+impl Render for HelloWorld {
+    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .justify_between()
+            .gap_3()
+            .py_3()
+            .px_3()
+            .bg(rgb(0x505050))
+            .border_1()
+            .border_color(rgb(0x0000ff))
+            .text_color(rgb(0xffffff))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .overflow_x_hidden()
+                    .child(format!("hello, {}!", &self.text)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(div().size_8().bg(gpui::red()))
+                    .child(div().size_8().bg(gpui::green()))
+                    .child(div().size_8().bg(gpui::blue()))
+                    .child(div().size_8().bg(gpui::yellow()))
+                    .child(div().size_8().bg(gpui::black()))
+                    .child(div().size_8().bg(gpui::white())),
+            )
+    }
+}
+
+fn main() {
+    App::new().run(|cx: &mut AppContext| {
+        let bounds = Bounds::centered(None, size(px(1000.), px(50.0)), cx);
+        let layer_shell_settings = LayerShellSettings {
+            layer: Layer::Top,
+            anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+            exclusive_zone: Some(px(50.0)),
+            ..Default::default()
+        };
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                kind: WindowKind::LayerShell(layer_shell_settings),
+                ..Default::default()
+            },
+            |cx| {
+                cx.new_view(|_cx| HelloWorld {
+                    text: "World".into(),
+                })
+            },
+        )
+        .unwrap();
+    });
+}
