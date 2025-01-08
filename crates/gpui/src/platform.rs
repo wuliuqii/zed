@@ -74,6 +74,7 @@ pub(crate) use windows::*;
 #[cfg(any(test, feature = "test-support"))]
 pub use test::TestScreenCaptureSource;
 
+#[cfg(target_os = "linux")]
 #[cfg(feature = "wayland")]
 pub use linux::window::{Anchor, KeyboardInteractivity, Layer, LayerShellSettings};
 
@@ -1030,6 +1031,7 @@ pub enum WindowKind {
     PopUp,
 
     /// A window that is layers of the desktop, wayland only
+    #[cfg(target_os = "linux")]
     #[cfg(feature = "wayland")]
     LayerShell(LayerShellSettings),
 }
