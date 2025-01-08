@@ -16,11 +16,14 @@ use wayland_client::WEnum;
 use wayland_client::{protocol::wl_surface, Proxy};
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1;
 use wayland_protocols::wp::viewporter::client::wp_viewport;
-use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1;
+use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::{self};
 use wayland_protocols::xdg::shell::client::xdg_surface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self};
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
-use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+use wayland_protocols_wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1,
+    zwlr_layer_surface_v1::{self},
+};
 
 use crate::{
     platform::{
@@ -300,13 +303,14 @@ impl WaylandWindow {
         params: WindowParams,
         appearance: WindowAppearance,
     ) -> anyhow::Result<(Self, ObjectId)> {
-        let surface = globals.compositor.create_surface(&globals.qh, ());
+        let wl_surface = globals.compositor.create_surface(&globals.qh, ());
 
         let (xdg_surface, toplevel, decoration) = if params.kind == WindowKind::Normal {
-            let xdg_surface = globals
-                .wm_base
-                .get_xdg_surface(&surface, &globals.qh, surface.id());
-            let toplevel = xdg_surface.get_toplevel(&globals.qh, surface.id());
+            let xdg_surface =
+                globals
+                    .wm_base
+                    .get_xdg_surface(&wl_surface, &globals.qh, wl_surface.id());
+            let toplevel = xdg_surface.get_toplevel(&globals.qh, wl_surface.id());
 
             if let Some(size) = params.window_min_size {
                 toplevel.set_min_size(size.width.0 as i32, size.height.0 as i32);
@@ -317,7 +321,11 @@ impl WaylandWindow {
                 .decoration_manager
                 .as_ref()
                 .map(|decoration_manager| {
-                    decoration_manager.get_toplevel_decoration(&toplevel, &globals.qh, surface.id())
+                    decoration_manager.get_toplevel_decoration(
+                        &toplevel,
+                        &globals.qh,
+                        wl_surface.id(),
+                    )
                 });
 
             (Some(xdg_surface), Some(toplevel), decoration)
@@ -325,15 +333,14 @@ impl WaylandWindow {
             (None, None, None)
         };
 
-        let layer_surface = if let WindowKind::LayerShell(layer_shell_settings) = params.kind {
+        let layer_surface = if let WindowKind::LayerShell(ref layer_shell_settings) = params.kind {
             let layer_surface = globals.layer_shell.get_layer_surface(
-                &surface,
+                &wl_surface,
                 None,
                 layer_shell_settings.layer.into(),
-                // TODO: namespace
-                "layer_surface".to_string(),
+                layer_shell_settings.namespace.clone(),
                 &globals.qh,
-                surface.id(),
+                wl_surface.id(),
             );
             layer_surface.set_anchor(zwlr_layer_surface_v1::Anchor::from_bits_truncate(
                 layer_shell_settings.anchor.bits(),
@@ -344,6 +351,11 @@ impl WaylandWindow {
             );
             layer_surface
                 .set_keyboard_interactivity(layer_shell_settings.keyboard_interactivity.into());
+            if !layer_shell_settings.pointer_interactivity {
+                let region = globals.compositor.create_region(&globals.qh, ());
+                wl_surface.set_input_region(Some(&region));
+                region.destroy();
+            }
             if let Some(margin) = layer_shell_settings.margin {
                 layer_surface.set_margin(
                     margin.0 .0 as i32,
@@ -362,18 +374,22 @@ impl WaylandWindow {
         };
 
         if let Some(fractional_scale_manager) = globals.fractional_scale_manager.as_ref() {
-            fractional_scale_manager.get_fractional_scale(&surface, &globals.qh, surface.id());
+            fractional_scale_manager.get_fractional_scale(
+                &wl_surface,
+                &globals.qh,
+                wl_surface.id(),
+            );
         }
 
         let viewport = globals
             .viewporter
             .as_ref()
-            .map(|viewporter| viewporter.get_viewport(&surface, &globals.qh, ()));
+            .map(|viewporter| viewporter.get_viewport(&wl_surface, &globals.qh, ()));
 
         let this = Self(WaylandWindowStatePtr {
             state: Rc::new(RefCell::new(WaylandWindowState::new(
                 handle,
-                surface.clone(),
+                wl_surface.clone(),
                 xdg_surface,
                 layer_surface,
                 toplevel,
@@ -389,9 +405,9 @@ impl WaylandWindow {
         });
 
         // Kick things off
-        surface.commit();
+        wl_surface.commit();
 
-        Ok((this, surface.id()))
+        Ok((this, wl_surface.id()))
     }
 }
 

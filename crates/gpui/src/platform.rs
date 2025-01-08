@@ -1035,9 +1035,9 @@ pub enum Layer {
     Overlay,
 }
 
+#[cfg(feature = "wayland")]
 bitflags! {
     /// The anchor point for a layer shell surface
-    #[cfg(feature = "wayland")]
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     pub struct Anchor: u32 {
         /// The top edge of the surface
@@ -1065,7 +1065,7 @@ pub enum KeyboardInteractivity {
 
 /// Settings for a layer shell surface
 #[cfg(feature = "wayland")]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayerShellSettings {
     /// Layer of the surface
     pub layer: Layer,
@@ -1077,8 +1077,13 @@ pub struct LayerShellSettings {
     pub margin: Option<(Pixels, Pixels, Pixels, Pixels)>,
     /// Types of keyboard interaction possible for layer shell surfaces
     pub keyboard_interactivity: KeyboardInteractivity,
+    /// Whether the surface should receive pointer events
+    pub pointer_interactivity: bool,
+    /// Namespace for the layer shell surface
+    pub namespace: String,
 }
 
+#[cfg(feature = "wayland")]
 impl Default for LayerShellSettings {
     fn default() -> Self {
         Self {
@@ -1086,13 +1091,15 @@ impl Default for LayerShellSettings {
             anchor: Anchor::RIGHT | Anchor::LEFT,
             exclusive_zone: None,
             margin: None,
-            keyboard_interactivity: KeyboardInteractivity::None,
+            keyboard_interactivity: KeyboardInteractivity::Exclusive,
+            pointer_interactivity: true,
+            namespace: String::new(),
         }
     }
 }
 
 /// The kind of window to create
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WindowKind {
     /// A normal application window
     Normal,
