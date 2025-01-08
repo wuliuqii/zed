@@ -10,9 +10,6 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod mac;
 
-#[cfg(feature = "wayland")]
-use bitflags::bitflags;
-
 #[cfg(any(
     all(
         any(target_os = "linux", target_os = "freebsd"),
@@ -76,6 +73,9 @@ pub(crate) use windows::*;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use test::TestScreenCaptureSource;
+
+#[cfg(feature = "wayland")]
+pub use linux::window::{Anchor, KeyboardInteractivity, Layer, LayerShellSettings};
 
 #[cfg(target_os = "macos")]
 pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
@@ -1017,85 +1017,6 @@ pub struct TitlebarOptions {
 
     /// The position of the macOS traffic light buttons
     pub traffic_light_position: Option<Point<Pixels>>,
-}
-
-/// The z-depth of a layer
-///
-/// These values indicate which order in which layer surfaces are rendered.
-#[cfg(feature = "wayland")]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Layer {
-    /// The background layer
-    Background,
-    /// The bottom layer
-    Bottom,
-    /// The top layer
-    Top,
-    /// The overlay layer
-    Overlay,
-}
-
-#[cfg(feature = "wayland")]
-bitflags! {
-    /// The anchor point for a layer shell surface
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub struct Anchor: u32 {
-        /// The top edge of the surface
-        const TOP = 1;
-        /// The bottom edge of the surface
-        const BOTTOM = 2;
-        /// The left edge of the surface
-        const LEFT = 4;
-        /// The right edge of the surface
-        const RIGHT = 8;
-    }
-}
-
-/// Types of keyboard interaction possible for a layer shell surface
-#[cfg(feature = "wayland")]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum KeyboardInteractivity {
-    /// No keyboard focus is possible
-    None,
-    ///Request exclusive keyboard focus
-    Exclusive,
-    /// Request regular keyboard focus semantics
-    OnDemand,
-}
-
-/// Settings for a layer shell surface
-#[cfg(feature = "wayland")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LayerShellSettings {
-    /// Layer of the surface
-    pub layer: Layer,
-    /// Anchor point of the surface
-    pub anchor: Anchor,
-    /// The exclusive edge will prevent other surfaces from being placed in the same area
-    pub exclusive_zone: Option<Pixels>,
-    /// The distance away from the anchor point
-    pub margin: Option<(Pixels, Pixels, Pixels, Pixels)>,
-    /// Types of keyboard interaction possible for layer shell surfaces
-    pub keyboard_interactivity: KeyboardInteractivity,
-    /// Whether the surface should receive pointer events
-    pub pointer_interactivity: bool,
-    /// Namespace for the layer shell surface
-    pub namespace: String,
-}
-
-#[cfg(feature = "wayland")]
-impl Default for LayerShellSettings {
-    fn default() -> Self {
-        Self {
-            layer: Layer::Top,
-            anchor: Anchor::RIGHT | Anchor::LEFT,
-            exclusive_zone: None,
-            margin: None,
-            keyboard_interactivity: KeyboardInteractivity::Exclusive,
-            pointer_interactivity: true,
-            namespace: String::new(),
-        }
-    }
 }
 
 /// The kind of window to create

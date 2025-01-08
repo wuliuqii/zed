@@ -6,6 +6,8 @@ use std::{
     sync::Arc,
 };
 
+use bitflags::bitflags;
+
 use blade_graphics as gpu;
 use collections::HashMap;
 use futures::channel::oneshot::Receiver;
@@ -14,24 +16,33 @@ use raw_window_handle as rwh;
 use wayland_backend::client::ObjectId;
 use wayland_client::WEnum;
 use wayland_client::{protocol::wl_surface, Proxy};
-use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1;
-use wayland_protocols::wp::viewporter::client::wp_viewport;
-use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::{self};
 use wayland_protocols::xdg::shell::client::xdg_surface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self};
+use wayland_protocols::xdg::{
+    decoration::zv1::client::zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
+    shell::client::xdg_toplevel::XdgToplevel,
+};
+use wayland_protocols::{
+    wp::fractional_scale::v1::client::wp_fractional_scale_v1,
+    xdg::shell::client::xdg_surface::XdgSurface,
+};
+use wayland_protocols::{
+    wp::viewporter::client::wp_viewport, xdg::shell::client::xdg_popup::XdgPopup,
+};
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1,
-    zwlr_layer_surface_v1::{self},
+    zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
 };
 
+use crate::scene::Scene;
 use crate::{
     platform::{
         blade::{BladeContext, BladeRenderer, BladeSurfaceConfig},
         linux::wayland::{display::WaylandDisplay, serial::SerialKind},
         PlatformAtlas, PlatformInputHandler, PlatformWindow,
     },
-    KeyboardInteractivity, WindowKind,
+    WindowKind,
 };
 use crate::{
     px, size, AnyWindowHandle, Bounds, Decorations, Globals, GpuSpecs, Modifiers, Output, Pixels,
@@ -39,7 +50,6 @@ use crate::{
     ScaledPixels, Size, Tiling, WaylandClientStatePtr, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowParams,
 };
-use crate::{scene::Scene, Layer};
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
@@ -82,6 +92,80 @@ struct InProgressConfigure {
     tiling: Tiling,
 }
 
+/// The z-depth of a layer
+///
+/// These values indicate which order in which layer surfaces are rendered.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// The background layer
+    Background,
+    /// The bottom layer
+    Bottom,
+    /// The top layer
+    Top,
+    /// The overlay layer
+    Overlay,
+}
+
+bitflags! {
+    /// The anchor point for a layer shell surface
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub struct Anchor: u32 {
+        /// The top edge of the surface
+        const TOP = 1;
+        /// The bottom edge of the surface
+        const BOTTOM = 2;
+        /// The left edge of the surface
+        const LEFT = 4;
+        /// The right edge of the surface
+        const RIGHT = 8;
+    }
+}
+
+/// Types of keyboard interaction possible for a layer shell surface
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum KeyboardInteractivity {
+    /// No keyboard focus is possible
+    None,
+    ///Request exclusive keyboard focus
+    Exclusive,
+    /// Request regular keyboard focus semantics
+    OnDemand,
+}
+
+/// Settings for a layer shell surface
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerShellSettings {
+    /// Layer of the surface
+    pub layer: Layer,
+    /// Anchor point of the surface
+    pub anchor: Anchor,
+    /// The exclusive edge will prevent other surfaces from being placed in the same area
+    pub exclusive_zone: Option<Pixels>,
+    /// The distance away from the anchor point
+    pub margin: Option<(Pixels, Pixels, Pixels, Pixels)>,
+    /// Types of keyboard interaction possible for layer shell surfaces
+    pub keyboard_interactivity: KeyboardInteractivity,
+    /// Whether the surface should receive pointer events
+    pub pointer_interactivity: bool,
+    /// Namespace for the layer shell surface
+    pub namespace: String,
+}
+
+impl Default for LayerShellSettings {
+    fn default() -> Self {
+        Self {
+            layer: Layer::Top,
+            anchor: Anchor::RIGHT | Anchor::LEFT,
+            exclusive_zone: None,
+            margin: None,
+            keyboard_interactivity: KeyboardInteractivity::Exclusive,
+            pointer_interactivity: true,
+            namespace: String::new(),
+        }
+    }
+}
+
 impl From<Layer> for zwlr_layer_shell_v1::Layer {
     fn from(layer: Layer) -> Self {
         match layer {
@@ -103,7 +187,13 @@ impl From<KeyboardInteractivity> for zwlr_layer_surface_v1::KeyboardInteractivit
     }
 }
 
-pub struct WaylandWindowState {
+enum Surface {
+    Xdg((XdgSurface, XdgToplevel, ZxdgToplevelDecorationV1)),
+    Layer(ZwlrLayerSurfaceV1),
+    Popup((XdgPopup, XdgSurface)),
+}
+
+struct WaylandWindowState {
     xdg_surface: Option<xdg_surface::XdgSurface>,
     layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     acknowledged_first_configure: bool,
@@ -138,7 +228,7 @@ pub struct WaylandWindowState {
 }
 
 #[derive(Clone)]
-pub struct WaylandWindowStatePtr {
+pub(crate) struct WaylandWindowStatePtr {
     state: Rc<RefCell<WaylandWindowState>>,
     callbacks: Rc<RefCell<Callbacks>>,
 }
@@ -239,7 +329,7 @@ impl WaylandWindowState {
 }
 
 pub(crate) struct WaylandWindow(pub WaylandWindowStatePtr);
-pub enum ImeInput {
+pub(crate) enum ImeInput {
     InsertText(String),
     SetMarkedText(String),
     UnmarkText,
