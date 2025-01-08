@@ -1,6 +1,6 @@
 use gpui::{
-    div, point, prelude::*, px, rgb, size, Anchor, App, AppContext, Bounds, Layer,
-    LayerShellSettings, SharedString, ViewContext, WindowBounds, WindowKind, WindowOptions,
+    div, point, prelude::*, px, rgb, size, Anchor, App, AppContext, Bounds, KeyboardInteractivity,
+    Layer, LayerShellSettings, SharedString, ViewContext, WindowBounds, WindowKind, WindowOptions,
 };
 
 struct HelloWorld {
@@ -58,7 +58,8 @@ fn main() {
             layer: Layer::Top,
             anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
             exclusive_zone: Some(height),
-            keyboard_interactivity: gpui::KeyboardInteractivity::OnDemand,
+            keyboard_interactivity: KeyboardInteractivity::None,
+            namespace: "simple bar".to_string(),
             ..Default::default()
         };
         cx.open_window(

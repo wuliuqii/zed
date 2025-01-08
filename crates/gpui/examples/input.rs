@@ -3,11 +3,11 @@ use std::ops::Range;
 use gpui::{
     actions, black, div, fill, hsla, opaque_grey, point, prelude::*, px, relative, rgb, rgba, size,
     white, yellow, Anchor, App, AppContext, Bounds, ClipboardItem, CursorStyle, ElementId,
-    ElementInputHandler, FocusHandle, FocusableView, GlobalElementId, KeyBinding, Keystroke, Layer,
-    LayerShellSettings, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection,
-    UnderlineStyle, View, ViewContext, ViewInputHandler, WindowBounds, WindowContext, WindowKind,
-    WindowOptions,
+    ElementInputHandler, FocusHandle, FocusableView, GlobalElementId, KeyBinding,
+    KeyboardInteractivity, Keystroke, Layer, LayerShellSettings, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
+    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, View, ViewContext,
+    ViewInputHandler, WindowBounds, WindowContext, WindowKind, WindowOptions,
 };
 use unicode_segmentation::*;
 
@@ -650,7 +650,8 @@ fn main() {
         let layer_shell_settings = LayerShellSettings {
             layer: Layer::Top,
             anchor: Anchor::RIGHT | Anchor::LEFT,
-            keyboard_interactivity: gpui::KeyboardInteractivity::OnDemand,
+            keyboard_interactivity: KeyboardInteractivity::OnDemand,
+            pointer_interactivity: false,
             ..Default::default()
         };
         let window = cx
