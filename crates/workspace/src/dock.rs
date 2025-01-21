@@ -76,6 +76,21 @@ pub trait PanelHandle: Send + Sync {
     fn focus_handle(&self, cx: &AppContext) -> FocusHandle;
     fn to_any(&self) -> AnyView;
     fn activation_priority(&self, cx: &AppContext) -> u32;
+    fn move_to_next_position(&self, cx: &mut WindowContext) {
+        let current_position = self.position(cx);
+        let next_position = [
+            DockPosition::Left,
+            DockPosition::Bottom,
+            DockPosition::Right,
+        ]
+        .into_iter()
+        .filter(|position| self.position_is_valid(*position, cx))
+        .skip_while(|valid_position| *valid_position != current_position)
+        .nth(1)
+        .unwrap_or(DockPosition::Left);
+
+        self.set_position(next_position, cx);
+    }
 }
 
 impl<T> PanelHandle for View<T>
@@ -170,6 +185,7 @@ impl From<&dyn PanelHandle> for AnyView {
 pub struct Dock {
     position: DockPosition,
     panel_entries: Vec<PanelEntry>,
+    workspace: WeakView<Workspace>,
     is_open: bool,
     active_panel_index: Option<usize>,
     focus_handle: FocusHandle,
@@ -236,6 +252,7 @@ impl Dock {
             });
             Self {
                 position,
+                workspace: workspace.downgrade(),
                 panel_entries: Default::default(),
                 active_panel_index: None,
                 is_open: false,
@@ -354,6 +371,11 @@ impl Dock {
             }
         }
 
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.serialize_workspace(cx);
+            })
+            .ok();
         cx.notify();
     }
 
@@ -484,7 +506,8 @@ impl Dock {
             },
         );
 
-        if !self.restore_state(cx) && panel.read(cx).starts_open(cx) {
+        self.restore_state(cx);
+        if panel.read(cx).starts_open(cx) {
             self.activate_panel(index, cx);
             self.set_open(true, cx);
         }
@@ -652,9 +675,14 @@ impl Render for Dock {
                     )
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|v, e: &MouseUpEvent, cx| {
+                        cx.listener(|dock, e: &MouseUpEvent, cx| {
                             if e.click_count == 2 {
-                                v.resize_active_panel(None, cx);
+                                dock.resize_active_panel(None, cx);
+                                dock.workspace
+                                    .update(cx, |workspace, cx| {
+                                        workspace.serialize_workspace(cx);
+                                    })
+                                    .ok();
                                 cx.stop_propagation();
                             }
                         }),
