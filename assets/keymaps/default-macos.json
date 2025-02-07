@@ -127,7 +127,7 @@
       "ctrl-cmd-space": "editor::ShowCharacterPalette",
       "cmd-;": "editor::ToggleLineNumbers",
       "cmd-alt-z": "editor::RevertSelectedHunks",
-      "cmd-'": "editor::ToggleHunkDiff",
+      "cmd-'": "editor::ToggleSelectedDiffHunks",
       "cmd-\"": "editor::ExpandAllHunkDiffs",
       "cmd-alt-g b": "editor::ToggleGitBlame",
       "cmd-i": "editor::ShowSignatureHelp",
@@ -145,12 +145,13 @@
       "cmd-shift-enter": "editor::NewlineAbove",
       "cmd-k z": "editor::ToggleSoftWrap",
       "cmd-f": "buffer_search::Deploy",
-      "cmd-alt-f": ["buffer_search::Deploy", { "replace_enabled": true }],
+      "cmd-alt-f": "buffer_search::DeployReplace",
       "cmd-alt-l": ["buffer_search::Deploy", { "selection_search_enabled": true }],
       "cmd-e": ["buffer_search::Deploy", { "focus": false }],
       "cmd->": "assistant::QuoteSelection",
       "cmd-<": "assistant::InsertIntoEditor",
-      "cmd-alt-e": "editor::SelectEnclosingSymbol"
+      "cmd-alt-e": "editor::SelectEnclosingSymbol",
+      "alt-enter": "editor::OpenSelectionsInMultibuffer"
     }
   },
   {
@@ -227,6 +228,7 @@
     "use_key_equivalents": true,
     "bindings": {
       "cmd-n": "assistant2::NewThread",
+      "cmd-alt-p": "assistant2::NewPromptEditor",
       "cmd-shift-h": "assistant2::OpenHistory",
       "cmd-alt-/": "assistant2::ToggleModelSelector",
       "cmd-shift-a": "assistant2::ToggleContextPicker",
@@ -502,6 +504,7 @@
       "cmd-shift-m": "diagnostics::Deploy",
       "cmd-shift-e": "project_panel::ToggleFocus",
       "cmd-shift-b": "outline_panel::ToggleFocus",
+      "ctrl-shift-g": "git_panel::ToggleFocus",
       "cmd-?": "assistant::ToggleFocus",
       "cmd-alt-s": "workspace::SaveAll",
       "cmd-k m": "language_selector::Toggle",
@@ -577,7 +580,14 @@
     }
   },
   {
-    "context": "Editor && inline_completion && !showing_completions",
+    "context": "Editor && inline_completion",
+    "bindings": {
+      // Changing the modifier currently breaks accepting while you also an LSP completions menu open
+      "alt-tab": "editor::AcceptInlineCompletion"
+    }
+  },
+  {
+    "context": "Editor && inline_completion && !inline_completion_requires_modifier",
     "use_key_equivalents": true,
     "bindings": {
       "tab": "editor::AcceptInlineCompletion"
@@ -619,7 +629,7 @@
     "bindings": {
       "alt-enter": "editor::OpenExcerpts",
       "shift-enter": "editor::ExpandExcerpts",
-      "cmd-k enter": "editor::OpenExcerptsSplit",
+      "cmd-alt-enter": "editor::OpenExcerptsSplit",
       "cmd-shift-e": "pane::RevealInProjectPanel",
       "cmd-f8": "editor::GoToHunk",
       "cmd-shift-f8": "editor::GoToPrevHunk",
@@ -666,7 +676,7 @@
       "shift-down": "menu::SelectNext",
       "shift-up": "menu::SelectPrev",
       "alt-enter": "editor::OpenExcerpts",
-      "cmd-k enter": "editor::OpenExcerptsSplit"
+      "cmd-alt-enter": "editor::OpenExcerptsSplit"
     }
   },
   {
@@ -706,13 +716,6 @@
     }
   },
   {
-    "context": "GitPanel && !CommitEditor",
-    "use_key_equivalents": true,
-    "bindings": {
-      "escape": "git_panel::Close"
-    }
-  },
-  {
     "context": "GitPanel && ChangesList",
     "use_key_equivalents": true,
     "bindings": {
@@ -724,17 +727,20 @@
       "space": "git::ToggleStaged",
       "cmd-shift-space": "git::StageAll",
       "ctrl-shift-space": "git::UnstageAll",
-      "alt-down": "git_panel::FocusEditor"
+      "alt-down": "git_panel::FocusEditor",
+      "tab": "git_panel::FocusEditor",
+      "shift-tab": "git_panel::FocusEditor",
+      "escape": "git_panel::ToggleFocus"
     }
   },
   {
-    "context": "GitPanel && CommitEditor > Editor",
+    "context": "GitPanel > Editor",
     "use_key_equivalents": true,
     "bindings": {
-      "alt-up": "git_panel::FocusChanges",
-      "escape": "git_panel::FocusChanges",
-      "cmd-enter": "git::CommitChanges",
-      "cmd-alt-enter": "git::CommitAllChanges"
+      "cmd-enter": "git::Commit",
+      "tab": "git_panel::FocusChanges",
+      "shift-tab": "git_panel::FocusChanges",
+      "alt-up": "git_panel::FocusChanges"
     }
   },
   {
@@ -831,6 +837,8 @@
       // Terminal.app compatibility
       "alt-left": ["terminal::SendText", "\u001bb"],
       "alt-right": ["terminal::SendText", "\u001bf"],
+      "alt-b": ["terminal::SendText", "\u001bb"],
+      "alt-f": ["terminal::SendText", "\u001bf"],
       // There are conflicting bindings for these keys in the global context.
       // these bindings override them, remove at your own risk:
       "up": ["terminal::SendKeystroke", "up"],
@@ -878,7 +886,7 @@
     }
   },
   {
-    "context": "ZedPredictTos",
+    "context": "ZedPredictModal",
     "use_key_equivalents": true,
     "bindings": {
       "escape": "menu::Cancel"

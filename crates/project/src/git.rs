@@ -1,205 +1,518 @@
-use std::sync::Arc;
-
-use anyhow::anyhow;
-use futures::channel::mpsc;
-use futures::{SinkExt as _, StreamExt as _};
+use crate::buffer_store::BufferStore;
+use crate::worktree_store::{WorktreeStore, WorktreeStoreEvent};
+use crate::{Project, ProjectPath};
+use anyhow::Context as _;
+use client::ProjectId;
+use futures::channel::{mpsc, oneshot};
+use futures::StreamExt as _;
 use git::{
     repository::{GitRepository, RepoPath},
     status::{GitSummary, TrackedSummary},
 };
-use gpui::{AppContext, SharedString};
+use gpui::{
+    App, AppContext, Context, Entity, EventEmitter, SharedString, Subscription, Task, WeakEntity,
+};
+use language::{Buffer, LanguageRegistry};
+use rpc::{proto, AnyProtoClient};
 use settings::WorktreeId;
-use worktree::RepositoryEntry;
+use std::path::Path;
+use std::sync::Arc;
+use text::BufferId;
+use util::{maybe, ResultExt};
+use worktree::{ProjectEntryId, RepositoryEntry, StatusEntry};
 
 pub struct GitState {
-    /// The current commit message being composed.
-    pub commit_message: SharedString,
+    project_id: Option<ProjectId>,
+    client: Option<AnyProtoClient>,
+    repositories: Vec<Entity<Repository>>,
+    active_index: Option<usize>,
+    update_sender: mpsc::UnboundedSender<(Message, oneshot::Sender<anyhow::Result<()>>)>,
+    _subscription: Subscription,
+}
 
-    /// When a git repository is selected, this is used to track which repository's changes
-    /// are currently being viewed or modified in the UI.
-    pub active_repository: Option<(WorktreeId, RepositoryEntry, Arc<dyn GitRepository>)>,
+pub struct Repository {
+    commit_message_buffer: Option<Entity<Buffer>>,
+    git_state: WeakEntity<GitState>,
+    pub worktree_id: WorktreeId,
+    pub repository_entry: RepositoryEntry,
+    pub git_repo: GitRepo,
+    update_sender: mpsc::UnboundedSender<(Message, oneshot::Sender<anyhow::Result<()>>)>,
+}
 
-    update_sender: mpsc::UnboundedSender<(Message, mpsc::Sender<anyhow::Error>)>,
+#[derive(Clone)]
+pub enum GitRepo {
+    Local(Arc<dyn GitRepository>),
+    Remote {
+        project_id: ProjectId,
+        client: AnyProtoClient,
+        worktree_id: WorktreeId,
+        work_directory_id: ProjectEntryId,
+    },
 }
 
 enum Message {
-    StageAndCommit(Arc<dyn GitRepository>, SharedString, Vec<RepoPath>),
-    Commit(Arc<dyn GitRepository>, SharedString),
-    Stage(Arc<dyn GitRepository>, Vec<RepoPath>),
-    Unstage(Arc<dyn GitRepository>, Vec<RepoPath>),
+    Commit {
+        git_repo: GitRepo,
+        message: SharedString,
+        name_and_email: Option<(SharedString, SharedString)>,
+    },
+    Stage(GitRepo, Vec<RepoPath>),
+    Unstage(GitRepo, Vec<RepoPath>),
 }
 
+pub enum GitEvent {
+    ActiveRepositoryChanged,
+    FileSystemUpdated,
+    GitStateUpdated,
+}
+
+impl EventEmitter<GitEvent> for GitState {}
+
 impl GitState {
-    pub fn new(cx: &AppContext) -> Self {
+    pub fn new(
+        worktree_store: &Entity<WorktreeStore>,
+        client: Option<AnyProtoClient>,
+        project_id: Option<ProjectId>,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
+        let update_sender = Self::spawn_git_worker(cx);
+        let _subscription = cx.subscribe(worktree_store, Self::on_worktree_store_event);
+
+        GitState {
+            project_id,
+            client,
+            repositories: Vec::new(),
+            active_index: None,
+            update_sender,
+            _subscription,
+        }
+    }
+
+    pub fn active_repository(&self) -> Option<Entity<Repository>> {
+        self.active_index
+            .map(|index| self.repositories[index].clone())
+    }
+
+    fn on_worktree_store_event(
+        &mut self,
+        worktree_store: Entity<WorktreeStore>,
+        event: &WorktreeStoreEvent,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // TODO inspect the event
+
+        let mut new_repositories = Vec::new();
+        let mut new_active_index = None;
+        let this = cx.weak_entity();
+        let client = self.client.clone();
+        let project_id = self.project_id;
+
+        worktree_store.update(cx, |worktree_store, cx| {
+            for worktree in worktree_store.worktrees() {
+                worktree.update(cx, |worktree, cx| {
+                    let snapshot = worktree.snapshot();
+                    for repo in snapshot.repositories().iter() {
+                        let git_repo = worktree
+                            .as_local()
+                            .and_then(|local_worktree| local_worktree.get_local_repo(repo))
+                            .map(|local_repo| local_repo.repo().clone())
+                            .map(GitRepo::Local)
+                            .or_else(|| {
+                                let client = client.clone()?;
+                                let project_id = project_id?;
+                                Some(GitRepo::Remote {
+                                    project_id,
+                                    client,
+                                    worktree_id: worktree.id(),
+                                    work_directory_id: repo.work_directory_id(),
+                                })
+                            });
+                        let Some(git_repo) = git_repo else {
+                            continue;
+                        };
+                        let worktree_id = worktree.id();
+                        let existing =
+                            self.repositories
+                                .iter()
+                                .enumerate()
+                                .find(|(_, existing_handle)| {
+                                    existing_handle.read(cx).id()
+                                        == (worktree_id, repo.work_directory_id())
+                                });
+                        let handle = if let Some((index, handle)) = existing {
+                            if self.active_index == Some(index) {
+                                new_active_index = Some(new_repositories.len());
+                            }
+                            // Update the statuses but keep everything else.
+                            let existing_handle = handle.clone();
+                            existing_handle.update(cx, |existing_handle, _| {
+                                existing_handle.repository_entry = repo.clone();
+                            });
+                            existing_handle
+                        } else {
+                            cx.new(|_| Repository {
+                                git_state: this.clone(),
+                                worktree_id,
+                                repository_entry: repo.clone(),
+                                git_repo,
+                                update_sender: self.update_sender.clone(),
+                                commit_message_buffer: None,
+                            })
+                        };
+                        new_repositories.push(handle);
+                    }
+                })
+            }
+        });
+
+        if new_active_index == None && new_repositories.len() > 0 {
+            new_active_index = Some(0);
+        }
+
+        self.repositories = new_repositories;
+        self.active_index = new_active_index;
+
+        match event {
+            WorktreeStoreEvent::WorktreeUpdatedGitRepositories(_) => {
+                cx.emit(GitEvent::GitStateUpdated);
+            }
+            _ => {
+                cx.emit(GitEvent::FileSystemUpdated);
+            }
+        }
+    }
+
+    pub fn all_repositories(&self) -> Vec<Entity<Repository>> {
+        self.repositories.clone()
+    }
+
+    fn spawn_git_worker(
+        cx: &mut Context<'_, GitState>,
+    ) -> mpsc::UnboundedSender<(Message, oneshot::Sender<anyhow::Result<()>>)> {
         let (update_sender, mut update_receiver) =
-            mpsc::unbounded::<(Message, mpsc::Sender<anyhow::Error>)>();
-        cx.spawn(|cx| async move {
-            while let Some((msg, mut err_sender)) = update_receiver.next().await {
+            mpsc::unbounded::<(Message, oneshot::Sender<anyhow::Result<()>>)>();
+        cx.spawn(|_, cx| async move {
+            while let Some((msg, respond)) = update_receiver.next().await {
                 let result = cx
                     .background_executor()
-                    .spawn(async move {
-                        match msg {
-                            Message::StageAndCommit(repo, message, paths) => {
-                                repo.stage_paths(&paths)?;
-                                repo.commit(&message)?;
-                                Ok(())
-                            }
-                            Message::Stage(repo, paths) => repo.stage_paths(&paths),
-                            Message::Unstage(repo, paths) => repo.unstage_paths(&paths),
-                            Message::Commit(repo, message) => repo.commit(&message),
-                        }
-                    })
+                    .spawn(Self::process_git_msg(msg))
                     .await;
-                if let Err(e) = result {
-                    err_sender.send(e).await.ok();
-                }
+                respond.send(result).ok();
             }
         })
         .detach();
-        GitState {
-            commit_message: SharedString::default(),
-            active_repository: None,
-            update_sender,
-        }
+        update_sender
     }
 
-    pub fn activate_repository(
-        &mut self,
+    async fn process_git_msg(msg: Message) -> Result<(), anyhow::Error> {
+        match msg {
+            Message::Stage(repo, paths) => {
+                match repo {
+                    GitRepo::Local(repo) => repo.stage_paths(&paths)?,
+                    GitRepo::Remote {
+                        project_id,
+                        client,
+                        worktree_id,
+                        work_directory_id,
+                    } => {
+                        client
+                            .request(proto::Stage {
+                                project_id: project_id.0,
+                                worktree_id: worktree_id.to_proto(),
+                                work_directory_id: work_directory_id.to_proto(),
+                                paths: paths
+                                    .into_iter()
+                                    .map(|repo_path| repo_path.to_proto())
+                                    .collect(),
+                            })
+                            .await
+                            .context("sending stage request")?;
+                    }
+                }
+                Ok(())
+            }
+            Message::Unstage(repo, paths) => {
+                match repo {
+                    GitRepo::Local(repo) => repo.unstage_paths(&paths)?,
+                    GitRepo::Remote {
+                        project_id,
+                        client,
+                        worktree_id,
+                        work_directory_id,
+                    } => {
+                        client
+                            .request(proto::Unstage {
+                                project_id: project_id.0,
+                                worktree_id: worktree_id.to_proto(),
+                                work_directory_id: work_directory_id.to_proto(),
+                                paths: paths
+                                    .into_iter()
+                                    .map(|repo_path| repo_path.to_proto())
+                                    .collect(),
+                            })
+                            .await
+                            .context("sending unstage request")?;
+                    }
+                }
+                Ok(())
+            }
+            Message::Commit {
+                git_repo,
+                message,
+                name_and_email,
+            } => {
+                match git_repo {
+                    GitRepo::Local(repo) => repo.commit(
+                        message.as_ref(),
+                        name_and_email
+                            .as_ref()
+                            .map(|(name, email)| (name.as_ref(), email.as_ref())),
+                    )?,
+                    GitRepo::Remote {
+                        project_id,
+                        client,
+                        worktree_id,
+                        work_directory_id,
+                    } => {
+                        let (name, email) = name_and_email.unzip();
+                        client
+                            .request(proto::Commit {
+                                project_id: project_id.0,
+                                worktree_id: worktree_id.to_proto(),
+                                work_directory_id: work_directory_id.to_proto(),
+                                message: String::from(message),
+                                name: name.map(String::from),
+                                email: email.map(String::from),
+                            })
+                            .await
+                            .context("sending commit request")?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Repository {
+    fn id(&self) -> (WorktreeId, ProjectEntryId) {
+        (self.worktree_id, self.repository_entry.work_directory_id())
+    }
+
+    pub fn display_name(&self, project: &Project, cx: &App) -> SharedString {
+        maybe!({
+            let path = self.repo_path_to_project_path(&"".into())?;
+            Some(
+                project
+                    .absolute_path(&path, cx)?
+                    .file_name()?
+                    .to_string_lossy()
+                    .to_string()
+                    .into(),
+            )
+        })
+        .unwrap_or("".into())
+    }
+
+    pub fn activate(&self, cx: &mut Context<Self>) {
+        let Some(git_state) = self.git_state.upgrade() else {
+            return;
+        };
+        let entity = cx.entity();
+        git_state.update(cx, |git_state, cx| {
+            let Some(index) = git_state
+                .repositories
+                .iter()
+                .position(|handle| *handle == entity)
+            else {
+                return;
+            };
+            git_state.active_index = Some(index);
+            cx.emit(GitEvent::ActiveRepositoryChanged);
+        });
+    }
+
+    pub fn status(&self) -> impl '_ + Iterator<Item = StatusEntry> {
+        self.repository_entry.status()
+    }
+
+    pub fn has_conflict(&self, path: &RepoPath) -> bool {
+        self.repository_entry
+            .current_merge_conflicts
+            .contains(&path)
+    }
+
+    pub fn repo_path_to_project_path(&self, path: &RepoPath) -> Option<ProjectPath> {
+        let path = self.repository_entry.unrelativize(path)?;
+        Some((self.worktree_id, path).into())
+    }
+
+    pub fn project_path_to_repo_path(&self, path: &ProjectPath) -> Option<RepoPath> {
+        self.worktree_id_path_to_repo_path(path.worktree_id, &path.path)
+    }
+
+    pub fn worktree_id_path_to_repo_path(
+        &self,
         worktree_id: WorktreeId,
-        active_repository: RepositoryEntry,
-        git_repo: Arc<dyn GitRepository>,
-    ) {
-        self.active_repository = Some((worktree_id, active_repository, git_repo));
-    }
-
-    pub fn active_repository(
-        &self,
-    ) -> Option<&(WorktreeId, RepositoryEntry, Arc<dyn GitRepository>)> {
-        self.active_repository.as_ref()
-    }
-
-    pub fn stage_entries(
-        &self,
-        entries: Vec<RepoPath>,
-        err_sender: mpsc::Sender<anyhow::Error>,
-    ) -> anyhow::Result<()> {
-        if entries.is_empty() {
-            return Ok(());
+        path: &Path,
+    ) -> Option<RepoPath> {
+        if worktree_id != self.worktree_id {
+            return None;
         }
-        let Some((_, _, git_repo)) = self.active_repository.as_ref() else {
-            return Err(anyhow!("No active repository"));
-        };
-        self.update_sender
-            .unbounded_send((Message::Stage(git_repo.clone(), entries), err_sender))
-            .map_err(|_| anyhow!("Failed to submit stage operation"))?;
-        Ok(())
+        self.repository_entry.relativize(path).log_err()
     }
 
-    pub fn unstage_entries(
-        &self,
-        entries: Vec<RepoPath>,
-        err_sender: mpsc::Sender<anyhow::Error>,
-    ) -> anyhow::Result<()> {
-        if entries.is_empty() {
-            return Ok(());
+    pub fn open_commit_buffer(
+        &mut self,
+        languages: Option<Arc<LanguageRegistry>>,
+        buffer_store: Entity<BufferStore>,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<Entity<Buffer>>> {
+        if let Some(buffer) = self.commit_message_buffer.clone() {
+            return Task::ready(Ok(buffer));
         }
-        let Some((_, _, git_repo)) = self.active_repository.as_ref() else {
-            return Err(anyhow!("No active repository"));
-        };
-        self.update_sender
-            .unbounded_send((Message::Unstage(git_repo.clone(), entries), err_sender))
-            .map_err(|_| anyhow!("Failed to submit unstage operation"))?;
-        Ok(())
+
+        if let GitRepo::Remote {
+            project_id,
+            client,
+            worktree_id,
+            work_directory_id,
+        } = self.git_repo.clone()
+        {
+            let client = client.clone();
+            cx.spawn(|repository, mut cx| async move {
+                let request = client.request(proto::OpenCommitMessageBuffer {
+                    project_id: project_id.0,
+                    worktree_id: worktree_id.to_proto(),
+                    work_directory_id: work_directory_id.to_proto(),
+                });
+                let response = request.await.context("requesting to open commit buffer")?;
+                let buffer_id = BufferId::new(response.buffer_id)?;
+                let buffer = buffer_store
+                    .update(&mut cx, |buffer_store, cx| {
+                        buffer_store.wait_for_remote_buffer(buffer_id, cx)
+                    })?
+                    .await?;
+                if let Some(language_registry) = languages {
+                    let git_commit_language =
+                        language_registry.language_for_name("Git Commit").await?;
+                    buffer.update(&mut cx, |buffer, cx| {
+                        buffer.set_language(Some(git_commit_language), cx);
+                    })?;
+                }
+                repository.update(&mut cx, |repository, _| {
+                    repository.commit_message_buffer = Some(buffer.clone());
+                })?;
+                Ok(buffer)
+            })
+        } else {
+            self.open_local_commit_buffer(languages, buffer_store, cx)
+        }
     }
 
-    pub fn stage_all(&self, err_sender: mpsc::Sender<anyhow::Error>) -> anyhow::Result<()> {
-        let Some((_, entry, _)) = self.active_repository.as_ref() else {
-            return Err(anyhow!("No active repository"));
-        };
-        let to_stage = entry
+    fn open_local_commit_buffer(
+        &mut self,
+        language_registry: Option<Arc<LanguageRegistry>>,
+        buffer_store: Entity<BufferStore>,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<Entity<Buffer>>> {
+        cx.spawn(|repository, mut cx| async move {
+            let buffer = buffer_store
+                .update(&mut cx, |buffer_store, cx| buffer_store.create_buffer(cx))?
+                .await?;
+
+            if let Some(language_registry) = language_registry {
+                let git_commit_language = language_registry.language_for_name("Git Commit").await?;
+                buffer.update(&mut cx, |buffer, cx| {
+                    buffer.set_language(Some(git_commit_language), cx);
+                })?;
+            }
+
+            repository.update(&mut cx, |repository, _| {
+                repository.commit_message_buffer = Some(buffer.clone());
+            })?;
+            Ok(buffer)
+        })
+    }
+
+    pub fn stage_entries(&self, entries: Vec<RepoPath>) -> oneshot::Receiver<anyhow::Result<()>> {
+        let (result_tx, result_rx) = futures::channel::oneshot::channel();
+        if entries.is_empty() {
+            result_tx.send(Ok(())).ok();
+            return result_rx;
+        }
+        self.update_sender
+            .unbounded_send((Message::Stage(self.git_repo.clone(), entries), result_tx))
+            .ok();
+        result_rx
+    }
+
+    pub fn unstage_entries(&self, entries: Vec<RepoPath>) -> oneshot::Receiver<anyhow::Result<()>> {
+        let (result_tx, result_rx) = futures::channel::oneshot::channel();
+        if entries.is_empty() {
+            result_tx.send(Ok(())).ok();
+            return result_rx;
+        }
+        self.update_sender
+            .unbounded_send((Message::Unstage(self.git_repo.clone(), entries), result_tx))
+            .ok();
+        result_rx
+    }
+
+    pub fn stage_all(&self) -> oneshot::Receiver<anyhow::Result<()>> {
+        let to_stage = self
+            .repository_entry
             .status()
             .filter(|entry| !entry.status.is_staged().unwrap_or(false))
             .map(|entry| entry.repo_path.clone())
             .collect();
-        self.stage_entries(to_stage, err_sender)?;
-        Ok(())
+        self.stage_entries(to_stage)
     }
 
-    pub fn unstage_all(&self, err_sender: mpsc::Sender<anyhow::Error>) -> anyhow::Result<()> {
-        let Some((_, entry, _)) = self.active_repository.as_ref() else {
-            return Err(anyhow!("No active repository"));
-        };
-        let to_unstage = entry
+    pub fn unstage_all(&self) -> oneshot::Receiver<anyhow::Result<()>> {
+        let to_unstage = self
+            .repository_entry
             .status()
             .filter(|entry| entry.status.is_staged().unwrap_or(true))
             .map(|entry| entry.repo_path.clone())
             .collect();
-        self.unstage_entries(to_unstage, err_sender)?;
-        Ok(())
+        self.unstage_entries(to_unstage)
     }
 
     /// Get a count of all entries in the active repository, including
     /// untracked files.
     pub fn entry_count(&self) -> usize {
-        self.active_repository
-            .as_ref()
-            .map_or(0, |(_, entry, _)| entry.status_len())
+        self.repository_entry.status_len()
     }
 
     fn have_changes(&self) -> bool {
-        let Some((_, entry, _)) = self.active_repository.as_ref() else {
-            return false;
-        };
-        entry.status_summary() != GitSummary::UNCHANGED
+        self.repository_entry.status_summary() != GitSummary::UNCHANGED
     }
 
     fn have_staged_changes(&self) -> bool {
-        let Some((_, entry, _)) = self.active_repository.as_ref() else {
-            return false;
-        };
-        entry.status_summary().index != TrackedSummary::UNCHANGED
+        self.repository_entry.status_summary().index != TrackedSummary::UNCHANGED
     }
 
     pub fn can_commit(&self, commit_all: bool) -> bool {
-        return !self.commit_message.trim().is_empty()
-            && self.have_changes()
-            && (commit_all || self.have_staged_changes());
+        return self.have_changes() && (commit_all || self.have_staged_changes());
     }
 
-    pub fn commit(&mut self, err_sender: mpsc::Sender<anyhow::Error>) -> anyhow::Result<()> {
-        if !self.can_commit(false) {
-            return Err(anyhow!("Unable to commit"));
-        }
-        let Some((_, _, git_repo)) = self.active_repository() else {
-            return Err(anyhow!("No active repository"));
-        };
-        let git_repo = git_repo.clone();
-        let message = std::mem::take(&mut self.commit_message);
-        self.update_sender
-            .unbounded_send((Message::Commit(git_repo, message), err_sender))
-            .map_err(|_| anyhow!("Failed to submit commit operation"))?;
-        Ok(())
-    }
-
-    pub fn commit_all(&mut self, err_sender: mpsc::Sender<anyhow::Error>) -> anyhow::Result<()> {
-        if !self.can_commit(true) {
-            return Err(anyhow!("Unable to commit"));
-        }
-        let Some((_, entry, git_repo)) = self.active_repository.as_ref() else {
-            return Err(anyhow!("No active repository"));
-        };
-        let to_stage = entry
-            .status()
-            .filter(|entry| !entry.status.is_staged().unwrap_or(false))
-            .map(|entry| entry.repo_path.clone())
-            .collect::<Vec<_>>();
-        let message = std::mem::take(&mut self.commit_message);
+    pub fn commit(
+        &self,
+        message: SharedString,
+        name_and_email: Option<(SharedString, SharedString)>,
+    ) -> oneshot::Receiver<anyhow::Result<()>> {
+        let (result_tx, result_rx) = futures::channel::oneshot::channel();
         self.update_sender
             .unbounded_send((
-                Message::StageAndCommit(git_repo.clone(), message, to_stage),
-                err_sender,
+                Message::Commit {
+                    git_repo: self.git_repo.clone(),
+                    message,
+                    name_and_email,
+                },
+                result_tx,
             ))
-            .map_err(|_| anyhow!("Failed to submit commit operation"))?;
-        Ok(())
+            .ok();
+        result_rx
     }
 }

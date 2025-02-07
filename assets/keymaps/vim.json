@@ -86,6 +86,7 @@
       "ctrl-[": ["vim::SwitchMode", "Normal"],
       "v": "vim::ToggleVisual",
       "shift-v": "vim::ToggleVisualLine",
+      "ctrl-g": "vim::ShowLocation",
       "ctrl-v": "vim::ToggleVisualBlock",
       "ctrl-q": "vim::ToggleVisualBlock",
       "shift-k": "editor::Hover",
@@ -101,6 +102,7 @@
       "ctrl-e": "vim::LineDown",
       "ctrl-y": "vim::LineUp",
       // "g" commands
+      "g r": ["vim::PushOperator", "ReplaceWithRegister"],
       "g g": "vim::StartOfDocument",
       "g h": "editor::Hover",
       "g t": "pane::ActivateNextItem",
@@ -407,6 +409,7 @@
       "(": "vim::Parentheses",
       ")": "vim::Parentheses",
       "b": "vim::Parentheses",
+      // "b": "vim::AnyBrackets",
       "[": "vim::SquareBrackets",
       "]": "vim::SquareBrackets",
       "r": "vim::SquareBrackets",
@@ -419,7 +422,8 @@
       "i": "vim::IndentObj",
       "shift-i": ["vim::IndentObj", { "includeBelow": true }],
       "f": "vim::Method",
-      "c": "vim::Class"
+      "c": "vim::Class",
+      "e": "vim::EntireFile"
     }
   },
   {
@@ -435,7 +439,7 @@
     "bindings": {
       "d": "vim::CurrentLine",
       "s": ["vim::PushOperator", "DeleteSurrounds"],
-      "o": "editor::ToggleHunkDiff", // "d o"
+      "o": "editor::ToggleSelectedDiffHunks", // "d o"
       "p": "editor::RevertSelectedHunks" // "d p"
     }
   },
@@ -563,7 +567,7 @@
     }
   },
   {
-    "context": "ProjectPanel || CollabPanel || OutlinePanel || ChatPanel || VimControl || EmptyPane || SharedScreen || MarkdownPreview || KeyContextView",
+    "context": "GitPanel || ProjectPanel || CollabPanel || OutlinePanel || ChatPanel || VimControl || EmptyPane || SharedScreen || MarkdownPreview || KeyContextView",
     "bindings": {
       // window related commands (ctrl-w X)
       "ctrl-w": null,
@@ -608,10 +612,12 @@
       "ctrl-w shift-s": "pane::SplitHorizontal",
       "ctrl-w ctrl-s": "pane::SplitHorizontal",
       "ctrl-w s": "pane::SplitHorizontal",
-      "ctrl-w ctrl-c": "pane::CloseAllItems",
-      "ctrl-w c": "pane::CloseAllItems",
-      "ctrl-w ctrl-q": "pane::CloseAllItems",
-      "ctrl-w q": "pane::CloseAllItems",
+      "ctrl-w ctrl-c": "pane::CloseActiveItem",
+      "ctrl-w c": "pane::CloseActiveItem",
+      "ctrl-w ctrl-q": "pane::CloseActiveItem",
+      "ctrl-w q": "pane::CloseActiveItem",
+      "ctrl-w ctrl-a": "pane::CloseAllItems",
+      "ctrl-w a": "pane::CloseAllItems",
       "ctrl-w ctrl-o": "workspace::CloseInactiveTabsAndPanes",
       "ctrl-w o": "workspace::CloseInactiveTabsAndPanes",
       "ctrl-w ctrl-n": "workspace::NewFileSplitHorizontal",
@@ -619,7 +625,7 @@
     }
   },
   {
-    "context": "EmptyPane || SharedScreen || MarkdownPreview || KeyContextView || Welcome",
+    "context": "GitPanel || EmptyPane || SharedScreen || MarkdownPreview || KeyContextView || Welcome",
     "bindings": {
       ":": "command_palette::Toggle",
       "g /": "pane::DeploySearch"
@@ -666,6 +672,21 @@
       "k": "menu::SelectPrev",
       "shift-g": "menu::SelectLast",
       "g g": "menu::SelectFirst"
+    }
+  },
+  {
+    "context": "GitPanel && ChangesList",
+    "use_key_equivalents": true,
+    "bindings": {
+      "k": "menu::SelectPrev",
+      "j": "menu::SelectNext",
+      "g g": "menu::SelectFirst",
+      "shift-g": "menu::SelectLast",
+      "g f": "menu::Confirm",
+      "i": "git_panel::FocusEditor",
+      "x": "git::ToggleStaged",
+      "shift-x": "git::StageAll",
+      "shift-u": "git::UnstageAll"
     }
   }
 ]

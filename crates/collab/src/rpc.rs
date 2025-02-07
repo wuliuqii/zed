@@ -309,7 +309,8 @@ impl Server {
             .add_request_handler(forward_read_only_project_request::<proto::ResolveInlayHint>)
             .add_request_handler(forward_read_only_project_request::<proto::OpenBufferByPath>)
             .add_request_handler(forward_read_only_project_request::<proto::GitBranches>)
-            .add_request_handler(forward_read_only_project_request::<proto::GetStagedText>)
+            .add_request_handler(forward_read_only_project_request::<proto::OpenUnstagedDiff>)
+            .add_request_handler(forward_read_only_project_request::<proto::OpenUncommittedDiff>)
             .add_request_handler(
                 forward_mutating_project_request::<proto::RegisterBufferWithLanguageServers>,
             )
@@ -333,6 +334,9 @@ impl Server {
             .add_request_handler(forward_mutating_project_request::<proto::CopyProjectEntry>)
             .add_request_handler(forward_mutating_project_request::<proto::DeleteProjectEntry>)
             .add_request_handler(forward_mutating_project_request::<proto::ExpandProjectEntry>)
+            .add_request_handler(
+                forward_mutating_project_request::<proto::ExpandAllForProjectEntry>,
+            )
             .add_request_handler(forward_mutating_project_request::<proto::OnTypeFormatting>)
             .add_request_handler(forward_mutating_project_request::<proto::SaveBuffer>)
             .add_request_handler(forward_mutating_project_request::<proto::BlameBuffer>)
@@ -345,7 +349,7 @@ impl Server {
             .add_message_handler(broadcast_project_message_from_host::<proto::UpdateBufferFile>)
             .add_message_handler(broadcast_project_message_from_host::<proto::BufferReloaded>)
             .add_message_handler(broadcast_project_message_from_host::<proto::BufferSaved>)
-            .add_message_handler(broadcast_project_message_from_host::<proto::UpdateDiffBase>)
+            .add_message_handler(broadcast_project_message_from_host::<proto::UpdateDiffBases>)
             .add_request_handler(get_users)
             .add_request_handler(fuzzy_search_users)
             .add_request_handler(request_contact)
@@ -388,6 +392,10 @@ impl Server {
             .add_request_handler(forward_mutating_project_request::<proto::OpenContext>)
             .add_request_handler(forward_mutating_project_request::<proto::CreateContext>)
             .add_request_handler(forward_mutating_project_request::<proto::SynchronizeContexts>)
+            .add_request_handler(forward_mutating_project_request::<proto::Stage>)
+            .add_request_handler(forward_mutating_project_request::<proto::Unstage>)
+            .add_request_handler(forward_mutating_project_request::<proto::Commit>)
+            .add_request_handler(forward_mutating_project_request::<proto::OpenCommitMessageBuffer>)
             .add_message_handler(broadcast_project_message_from_host::<proto::AdvertiseContexts>)
             .add_message_handler(update_context)
             .add_request_handler({
