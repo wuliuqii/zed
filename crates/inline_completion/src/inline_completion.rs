@@ -1,4 +1,4 @@
-use gpui::{App, Context, Entity};
+use gpui::{App, Context, Entity, SharedString};
 use language::Buffer;
 use project::Project;
 use std::ops::Range;
@@ -15,6 +15,8 @@ pub enum Direction {
 
 #[derive(Clone)]
 pub struct InlineCompletion {
+    /// The ID of the completion, if it has one.
+    pub id: Option<SharedString>,
     pub edits: Vec<(Range<language::Anchor>, String)>,
     pub edit_preview: Option<language::EditPreview>,
 }
@@ -22,23 +24,35 @@ pub struct InlineCompletion {
 pub enum DataCollectionState {
     /// The provider doesn't support data collection.
     Unsupported,
-    /// Data collection is enabled
-    Enabled,
+    /// Data collection is enabled.
+    Enabled { is_project_open_source: bool },
     /// Data collection is disabled or unanswered.
-    Disabled,
+    Disabled { is_project_open_source: bool },
 }
 
 impl DataCollectionState {
     pub fn is_supported(&self) -> bool {
-        !matches!(self, DataCollectionState::Unsupported)
+        !matches!(self, DataCollectionState::Unsupported { .. })
     }
 
     pub fn is_enabled(&self) -> bool {
-        matches!(self, DataCollectionState::Enabled)
+        matches!(self, DataCollectionState::Enabled { .. })
+    }
+
+    pub fn is_project_open_source(&self) -> bool {
+        match self {
+            Self::Enabled {
+                is_project_open_source,
+            }
+            | Self::Disabled {
+                is_project_open_source,
+            } => *is_project_open_source,
+            _ => false,
+        }
     }
 }
 
-pub trait InlineCompletionProvider: 'static + Sized {
+pub trait EditPredictionProvider: 'static + Sized {
     fn name() -> &'static str;
     fn display_name() -> &'static str;
     fn show_completions_in_menu() -> bool;
@@ -126,7 +140,7 @@ pub trait InlineCompletionProviderHandle {
 
 impl<T> InlineCompletionProviderHandle for Entity<T>
 where
-    T: InlineCompletionProvider,
+    T: EditPredictionProvider,
 {
     fn name(&self) -> &'static str {
         T::name()

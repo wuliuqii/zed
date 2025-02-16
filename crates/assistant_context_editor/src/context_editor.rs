@@ -832,12 +832,13 @@ impl ContextEditor {
                 let render_block: RenderBlock = Arc::new({
                     let this = this.clone();
                     let patch_range = range.clone();
-                    move |cx: &mut BlockContext<'_, '_>| {
+                    move |cx: &mut BlockContext| {
                         let max_width = cx.max_width;
                         let gutter_width = cx.gutter_dimensions.full_width();
                         let block_id = cx.block_id;
                         let selected = cx.selected;
-                        this.update_in(cx, |this, window, cx| {
+                        let window = &mut cx.window;
+                        this.update(cx.app, |this, cx| {
                             this.render_patch_block(
                                 patch_range.clone(),
                                 max_width,
@@ -2289,7 +2290,7 @@ impl ContextEditor {
                 },
             ))
             .children(
-                KeyBinding::for_action_in(&Assist, &focus_handle, window)
+                KeyBinding::for_action_in(&Assist, &focus_handle, window, cx)
                     .map(|binding| binding.into_any_element()),
             )
             .on_click(move |_event, window, cx| {
@@ -2342,7 +2343,7 @@ impl ContextEditor {
             .layer(ElevationIndex::ModalSurface)
             .child(Label::new("Suggest Edits"))
             .children(
-                KeyBinding::for_action_in(&Edit, &focus_handle, window)
+                KeyBinding::for_action_in(&Edit, &focus_handle, window, cx)
                     .map(|binding| binding.into_any_element()),
             )
             .on_click(move |_event, window, cx| {
@@ -2358,8 +2359,8 @@ impl ContextEditor {
                 .icon(IconName::Plus)
                 .icon_size(IconSize::Small)
                 .icon_color(Color::Muted)
-                .icon_position(IconPosition::Start)
-                .tooltip(Tooltip::text("Type / to insert via keyboard")),
+                .icon_position(IconPosition::Start),
+            Tooltip::text("Type / to insert via keyboard"),
         )
     }
 
@@ -3322,10 +3323,10 @@ impl Render for ContextEditorToolbarItem {
                                         .color(Color::Muted)
                                         .size(IconSize::XSmall),
                                 ),
-                        )
-                        .tooltip(move |window, cx| {
-                            Tooltip::for_action("Change Model", &ToggleModelSelector, window, cx)
-                        }),
+                        ),
+                    move |window, cx| {
+                        Tooltip::for_action("Change Model", &ToggleModelSelector, window, cx)
+                    },
                 )
                 .with_handle(self.language_model_selector_menu_handle.clone()),
             )
