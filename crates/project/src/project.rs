@@ -5,7 +5,6 @@ pub mod debounced_delay;
 pub mod git;
 pub mod image_store;
 pub mod lsp_command;
-pub mod lsp_ext_command;
 pub mod lsp_store;
 pub mod prettier_store;
 pub mod project_settings;
@@ -46,11 +45,7 @@ use futures::{
 pub use image_store::{ImageItem, ImageStore};
 use image_store::{ImageItemEvent, ImageStoreEvent};
 
-use ::git::{
-    blame::Blame,
-    repository::{Branch, GitRepository, RepoPath},
-    status::FileStatus,
-};
+use ::git::{blame::Blame, repository::GitRepository, status::FileStatus};
 use gpui::{
     AnyEntity, App, AppContext as _, AsyncApp, BorrowAppContext, Context, Entity, EventEmitter,
     Hsla, SharedString, Task, WeakEntity, Window,
@@ -58,15 +53,15 @@ use gpui::{
 use itertools::Itertools;
 use language::{
     language_settings::InlayHintKind, proto::split_operations, Buffer, BufferEvent, Capability,
-    CodeLabel, CompletionDocumentation, File as _, Language, LanguageName, LanguageRegistry,
-    PointUtf16, ToOffset, ToPointUtf16, Toolchain, ToolchainList, Transaction, Unclipped,
+    CodeLabel, File as _, Language, LanguageName, LanguageRegistry, PointUtf16, ToOffset,
+    ToPointUtf16, Toolchain, ToolchainList, Transaction, Unclipped,
 };
 use lsp::{
     CodeActionKind, CompletionContext, CompletionItemKind, DocumentHighlightKind, LanguageServerId,
     LanguageServerName, MessageActionItem,
 };
 use lsp_command::*;
-use lsp_store::{LspFormatTarget, OpenLspBufferHandle};
+use lsp_store::{CompletionDocumentation, LspFormatTarget, OpenLspBufferHandle};
 use node_runtime::NodeRuntime;
 use parking_lot::Mutex;
 pub use prettier_store::PrettierStore;
@@ -107,7 +102,7 @@ pub use language::Location;
 #[cfg(any(test, feature = "test-support"))]
 pub use prettier::FORMAT_SUFFIX as TEST_PRETTIER_FORMAT_SUFFIX;
 pub use task_inventory::{
-    BasicContextProvider, ContextProviderWithTasks, Inventory, TaskSourceKind,
+    BasicContextProvider, ContextProviderWithTasks, Inventory, TaskContexts, TaskSourceKind,
 };
 pub use worktree::{
     Entry, EntryKind, File, LocalWorktree, PathChange, ProjectEntryId, UpdatedEntriesSet,
@@ -415,7 +410,48 @@ pub struct CodeAction {
     /// The range of the buffer where this code action is applicable.
     pub range: Range<Anchor>,
     /// The raw code action provided by the language server.
-    pub lsp_action: lsp::CodeAction,
+    /// Can be either an action or a command.
+    pub lsp_action: ActionVariant,
+}
+
+/// An action sent back by a language server.
+#[derive(Clone, Debug)]
+pub enum ActionVariant {
+    /// An action with the full data, may have a command or may not.
+    /// May require resolving.
+    Action(Box<lsp::CodeAction>),
+    /// A command data to run as an action.
+    Command(lsp::Command),
+}
+
+impl ActionVariant {
+    pub fn title(&self) -> &str {
+        match self {
+            Self::Action(action) => &action.title,
+            Self::Command(command) => &command.title,
+        }
+    }
+
+    fn action_kind(&self) -> Option<lsp::CodeActionKind> {
+        match self {
+            Self::Action(action) => action.kind.clone(),
+            Self::Command(_) => Some(lsp::CodeActionKind::new("command")),
+        }
+    }
+
+    fn edit(&self) -> Option<&lsp::WorkspaceEdit> {
+        match self {
+            Self::Action(action) => action.edit.as_ref(),
+            Self::Command(_) => None,
+        }
+    }
+
+    fn command(&self) -> Option<&lsp::Command> {
+        match self {
+            Self::Action(action) => action.command.as_ref(),
+            Self::Command(command) => Some(command),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -524,6 +560,12 @@ enum EntitySubscription {
     SettingsObserver(PendingEntitySubscription<SettingsObserver>),
 }
 
+#[derive(Debug, Clone)]
+pub struct DirectoryItem {
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
 #[derive(Clone)]
 pub enum DirectoryLister {
     Project(Entity<Project>),
@@ -552,24 +594,28 @@ impl DirectoryLister {
                 return worktree.read(cx).abs_path().to_string_lossy().to_string();
             }
         };
-        "~/".to_string()
+        format!("~{}", std::path::MAIN_SEPARATOR_STR)
     }
 
-    pub fn list_directory(&self, path: String, cx: &mut App) -> Task<Result<Vec<PathBuf>>> {
+    pub fn list_directory(&self, path: String, cx: &mut App) -> Task<Result<Vec<DirectoryItem>>> {
         match self {
             DirectoryLister::Project(project) => {
                 project.update(cx, |project, cx| project.list_directory(path, cx))
             }
             DirectoryLister::Local(fs) => {
                 let fs = fs.clone();
-                cx.background_executor().spawn(async move {
+                cx.background_spawn(async move {
                     let mut results = vec![];
                     let expanded = shellexpand::tilde(&path);
                     let query = Path::new(expanded.as_ref());
                     let mut response = fs.read_dir(query).await?;
                     while let Some(path) = response.next().await {
-                        if let Some(file_name) = path?.file_name() {
-                            results.push(PathBuf::from(file_name.to_os_string()));
+                        let path = path?;
+                        if let Some(file_name) = path.file_name() {
+                            results.push(DirectoryItem {
+                                path: PathBuf::from(file_name.to_os_string()),
+                                is_dir: fs.is_dir(&path).await,
+                            });
                         }
                     }
                     Ok(results)
@@ -701,8 +747,15 @@ impl Project {
                 )
             });
 
-            let git_store =
-                cx.new(|cx| GitStore::new(&worktree_store, buffer_store.clone(), None, None, cx));
+            let git_store = cx.new(|cx| {
+                GitStore::new(
+                    &worktree_store,
+                    buffer_store.clone(),
+                    client.clone().into(),
+                    None,
+                    cx,
+                )
+            });
 
             cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
 
@@ -826,7 +879,7 @@ impl Project {
                 GitStore::new(
                     &worktree_store,
                     buffer_store.clone(),
-                    Some(ssh_proto.clone()),
+                    ssh_proto.clone(),
                     Some(ProjectId(SSH_PROJECT_ID)),
                     cx,
                 )
@@ -1034,7 +1087,7 @@ impl Project {
             GitStore::new(
                 &worktree_store,
                 buffer_store.clone(),
-                Some(client.clone().into()),
+                client.clone().into(),
                 Some(ProjectId(remote_id)),
                 cx,
             )
@@ -1164,13 +1217,12 @@ impl Project {
                 .read(cx)
                 .shutdown_processes(Some(proto::ShutdownRemoteServer {}));
 
-            cx.background_executor()
-                .spawn(async move {
-                    if let Some(shutdown) = shutdown {
-                        shutdown.await;
-                    }
-                })
-                .detach()
+            cx.background_spawn(async move {
+                if let Some(shutdown) = shutdown {
+                    shutdown.await;
+                }
+            })
+            .detach()
         }
 
         match &self.client_state {
@@ -2267,7 +2319,6 @@ impl Project {
             BufferStoreEvent::BufferAdded(buffer) => {
                 self.register_buffer(buffer, cx).log_err();
             }
-            BufferStoreEvent::BufferChangedFilePath { .. } => {}
             BufferStoreEvent::BufferDropped(buffer_id) => {
                 if let Some(ref ssh_client) = self.ssh_client {
                     ssh_client
@@ -2280,6 +2331,7 @@ impl Project {
                         .log_err();
                 }
             }
+            _ => {}
         }
     }
 
@@ -2778,7 +2830,7 @@ impl Project {
     ) -> Task<Result<Vec<LocationLink>>> {
         self.request_lsp(
             buffer.clone(),
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             GetDefinition { position },
             cx,
         )
@@ -2801,7 +2853,7 @@ impl Project {
     ) -> Task<Result<Vec<LocationLink>>> {
         self.request_lsp(
             buffer.clone(),
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             GetDeclaration { position },
             cx,
         )
@@ -2825,7 +2877,7 @@ impl Project {
     ) -> Task<Result<Vec<LocationLink>>> {
         self.request_lsp(
             buffer.clone(),
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             GetTypeDefinition { position },
             cx,
         )
@@ -2850,7 +2902,7 @@ impl Project {
         let position = position.to_point_utf16(buffer.read(cx));
         self.request_lsp(
             buffer.clone(),
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             GetImplementation { position },
             cx,
         )
@@ -2865,7 +2917,7 @@ impl Project {
         let position = position.to_point_utf16(buffer.read(cx));
         self.request_lsp(
             buffer.clone(),
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             GetReferences { position },
             cx,
         )
@@ -2879,7 +2931,7 @@ impl Project {
     ) -> Task<Result<Vec<DocumentHighlight>>> {
         self.request_lsp(
             buffer.clone(),
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             GetDocumentHighlights { position },
             cx,
         )
@@ -3030,6 +3082,18 @@ impl Project {
         })
     }
 
+    pub fn apply_code_action_kind(
+        &self,
+        buffers: HashSet<Entity<Buffer>>,
+        kind: CodeActionKind,
+        push_to_history: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<ProjectTransaction>> {
+        self.lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.apply_code_action_kind(buffers, kind, push_to_history, cx)
+        })
+    }
+
     fn prepare_rename_impl(
         &mut self,
         buffer: Entity<Buffer>,
@@ -3038,7 +3102,7 @@ impl Project {
     ) -> Task<Result<PrepareRenameResponse>> {
         self.request_lsp(
             buffer,
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             PrepareRename { position },
             cx,
         )
@@ -3064,7 +3128,7 @@ impl Project {
         let position = position.to_point_utf16(buffer.read(cx));
         self.request_lsp(
             buffer,
-            LanguageServerToQuery::Primary,
+            LanguageServerToQuery::FirstCapable,
             PerformRename {
                 position,
                 new_name,
@@ -3139,7 +3203,7 @@ impl Project {
                     let buffer = buffer.clone();
                     let query = query.clone();
                     let snapshot = buffer.read_with(&cx, |buffer, _| buffer.snapshot())?;
-                    chunk_results.push(cx.background_executor().spawn(async move {
+                    chunk_results.push(cx.background_spawn(async move {
                         let ranges = query
                             .search(&snapshot, None)
                             .await
@@ -3378,7 +3442,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Task<Option<ResolvedPath>> {
         let resolve_task = self.resolve_abs_path(path, cx);
-        cx.background_executor().spawn(async move {
+        cx.background_spawn(async move {
             let resolved_path = resolve_task.await;
             resolved_path.filter(|path| path.is_file())
         })
@@ -3392,7 +3456,7 @@ impl Project {
         if self.is_local() {
             let expanded = PathBuf::from(shellexpand::tilde(&path).into_owned());
             let fs = self.fs.clone();
-            cx.background_executor().spawn(async move {
+            cx.background_spawn(async move {
                 let path = expanded.as_path();
                 let metadata = fs.metadata(path).await.ok().flatten();
 
@@ -3410,7 +3474,7 @@ impl Project {
                     project_id: SSH_PROJECT_ID,
                     path: request_path.to_proto(),
                 });
-            cx.background_executor().spawn(async move {
+            cx.background_spawn(async move {
                 let response = request.await.log_err()?;
                 if response.exists {
                     Some(ResolvedPath::AbsPath {
@@ -3441,34 +3505,39 @@ impl Project {
             }
         }
 
-        let worktrees = self.worktrees(cx).collect::<Vec<_>>();
+        let buffer_worktree_id = buffer.read(cx).file().map(|file| file.worktree_id(cx));
+        let worktrees_with_ids: Vec<_> = self
+            .worktrees(cx)
+            .map(|worktree| {
+                let id = worktree.read(cx).id();
+                (worktree, id)
+            })
+            .collect();
+
         cx.spawn(|_, mut cx| async move {
-            for worktree in worktrees {
+            if let Some(buffer_worktree_id) = buffer_worktree_id {
+                if let Some((worktree, _)) = worktrees_with_ids
+                    .iter()
+                    .find(|(_, id)| *id == buffer_worktree_id)
+                {
+                    for candidate in candidates.iter() {
+                        if let Some(path) =
+                            Self::resolve_path_in_worktree(&worktree, candidate, &mut cx)
+                        {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+            for (worktree, id) in worktrees_with_ids {
+                if Some(id) == buffer_worktree_id {
+                    continue;
+                }
                 for candidate in candidates.iter() {
-                    let path = worktree
-                        .update(&mut cx, |worktree, _| {
-                            let root_entry_path = &worktree.root_entry()?.path;
-
-                            let resolved = resolve_path(root_entry_path, candidate);
-
-                            let stripped =
-                                resolved.strip_prefix(root_entry_path).unwrap_or(&resolved);
-
-                            worktree.entry_for_path(stripped).map(|entry| {
-                                let project_path = ProjectPath {
-                                    worktree_id: worktree.id(),
-                                    path: entry.path.clone(),
-                                };
-                                ResolvedPath::ProjectPath {
-                                    project_path,
-                                    is_dir: entry.is_dir(),
-                                }
-                            })
-                        })
-                        .ok()?;
-
-                    if path.is_some() {
-                        return path;
+                    if let Some(path) =
+                        Self::resolve_path_in_worktree(&worktree, candidate, &mut cx)
+                    {
+                        return Some(path);
                     }
                 }
             }
@@ -3476,11 +3545,35 @@ impl Project {
         })
     }
 
+    fn resolve_path_in_worktree(
+        worktree: &Entity<Worktree>,
+        path: &PathBuf,
+        cx: &mut AsyncApp,
+    ) -> Option<ResolvedPath> {
+        worktree
+            .update(cx, |worktree, _| {
+                let root_entry_path = &worktree.root_entry()?.path;
+                let resolved = resolve_path(root_entry_path, path);
+                let stripped = resolved.strip_prefix(root_entry_path).unwrap_or(&resolved);
+                worktree.entry_for_path(stripped).map(|entry| {
+                    let project_path = ProjectPath {
+                        worktree_id: worktree.id(),
+                        path: entry.path.clone(),
+                    };
+                    ResolvedPath::ProjectPath {
+                        project_path,
+                        is_dir: entry.is_dir(),
+                    }
+                })
+            })
+            .ok()?
+    }
+
     pub fn list_directory(
         &self,
         query: String,
         cx: &mut Context<Self>,
-    ) -> Task<Result<Vec<PathBuf>>> {
+    ) -> Task<Result<Vec<DirectoryItem>>> {
         if self.is_local() {
             DirectoryLister::Local(self.fs.clone()).list_directory(query, cx)
         } else if let Some(session) = self.ssh_client.as_ref() {
@@ -3488,12 +3581,23 @@ impl Project {
             let request = proto::ListRemoteDirectory {
                 dev_server_id: SSH_PROJECT_ID,
                 path: path_buf.to_proto(),
+                config: Some(proto::ListRemoteDirectoryConfig { is_dir: true }),
             };
 
             let response = session.read(cx).proto_client().request(request);
-            cx.background_executor().spawn(async move {
-                let response = response.await?;
-                Ok(response.entries.into_iter().map(PathBuf::from).collect())
+            cx.background_spawn(async move {
+                let proto::ListRemoteDirectoryResponse {
+                    entries,
+                    entry_info,
+                } = response.await?;
+                Ok(entries
+                    .into_iter()
+                    .zip(entry_info)
+                    .map(|(entry, info)| DirectoryItem {
+                        path: PathBuf::from(entry),
+                        is_dir: info.is_dir,
+                    })
+                    .collect())
             })
         } else {
             Task::ready(Err(anyhow!("cannot list directory in remote project")))
@@ -3642,21 +3746,6 @@ impl Project {
         let worktree = self.visible_worktrees(cx).next()?.read(cx).as_local()?;
         let root_entry = worktree.root_git_entry()?;
         worktree.get_local_repo(&root_entry)?.repo().clone().into()
-    }
-
-    pub fn branches(&self, project_path: ProjectPath, cx: &App) -> Task<Result<Vec<Branch>>> {
-        self.worktree_store().read(cx).branches(project_path, cx)
-    }
-
-    pub fn update_or_create_branch(
-        &self,
-        repository: ProjectPath,
-        new_branch: String,
-        cx: &App,
-    ) -> Task<Result<()>> {
-        self.worktree_store()
-            .read(cx)
-            .update_or_create_branch(repository, new_branch, cx)
     }
 
     pub fn blame_buffer(
@@ -3907,8 +3996,7 @@ impl Project {
             if let Some(remote_id) = this.remote_id() {
                 let mut payload = envelope.payload.clone();
                 payload.project_id = remote_id;
-                cx.background_executor()
-                    .spawn(this.client.request(payload))
+                cx.background_spawn(this.client.request(payload))
                     .detach_and_log_err(cx);
             }
             this.buffer_store.clone()
@@ -3925,8 +4013,7 @@ impl Project {
             if let Some(ssh) = &this.ssh_client {
                 let mut payload = envelope.payload.clone();
                 payload.project_id = SSH_PROJECT_ID;
-                cx.background_executor()
-                    .spawn(ssh.read(cx).proto_client().request(payload))
+                cx.background_spawn(ssh.read(cx).proto_client().request(payload))
                     .detach_and_log_err(cx);
             }
             this.buffer_store.clone()
@@ -4147,7 +4234,7 @@ impl Project {
                         if let Some(buffer) = this.buffer_for_id(buffer_id, cx) {
                             let operations =
                                 buffer.read(cx).serialize_ops(Some(remote_version), cx);
-                            cx.background_executor().spawn(async move {
+                            cx.background_spawn(async move {
                                 let operations = operations.await;
                                 for chunk in split_operations(operations) {
                                     client
@@ -4170,12 +4257,11 @@ impl Project {
             // Any incomplete buffers have open requests waiting. Request that the host sends
             // creates these buffers for us again to unblock any waiting futures.
             for id in incomplete_buffer_ids {
-                cx.background_executor()
-                    .spawn(client.request(proto::OpenBufferById {
-                        project_id,
-                        id: id.into(),
-                    }))
-                    .detach();
+                cx.background_spawn(client.request(proto::OpenBufferById {
+                    project_id,
+                    id: id.into(),
+                }))
+                .detach();
             }
 
             futures::future::join_all(send_updates_for_buffers)
@@ -4293,25 +4379,8 @@ impl Project {
         self.git_store.read(cx).all_repositories()
     }
 
-    pub fn repository_and_path_for_buffer_id(
-        &self,
-        buffer_id: BufferId,
-        cx: &App,
-    ) -> Option<(Entity<Repository>, RepoPath)> {
-        let path = self
-            .buffer_for_id(buffer_id, cx)?
-            .read(cx)
-            .project_path(cx)?;
-        self.git_store
-            .read(cx)
-            .all_repositories()
-            .into_iter()
-            .find_map(|repo| {
-                Some((
-                    repo.clone(),
-                    repo.read(cx).repository_entry.relativize(&path.path).ok()?,
-                ))
-            })
+    pub fn status_for_buffer_id(&self, buffer_id: BufferId, cx: &App) -> Option<FileStatus> {
+        self.git_store.read(cx).status_for_buffer_id(buffer_id, cx)
     }
 }
 

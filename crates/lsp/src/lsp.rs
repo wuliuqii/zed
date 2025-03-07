@@ -6,7 +6,7 @@ pub use lsp_types::*;
 use anyhow::{anyhow, Context as _, Result};
 use collections::HashMap;
 use futures::{channel::oneshot, io::BufWriter, select, AsyncRead, AsyncWrite, Future, FutureExt};
-use gpui::{App, AsyncApp, BackgroundExecutor, SharedString, Task};
+use gpui::{App, AppContext as _, AsyncApp, BackgroundExecutor, SharedString, Task};
 use notification::DidChangeWorkspaceFolders;
 use parking_lot::{Mutex, RwLock};
 use postage::{barrier, prelude::Stream};
@@ -100,6 +100,7 @@ pub struct LanguageServer {
     output_done_rx: Mutex<Option<barrier::Receiver>>,
     server: Arc<Mutex<Option<Child>>>,
     workspace_folders: Arc<Mutex<BTreeSet<Url>>>,
+    root_uri: Url,
 }
 
 /// Identifies a running language server.
@@ -298,36 +299,9 @@ pub struct AdapterServerCapabilities {
     pub code_action_kinds: Option<Vec<CodeActionKind>>,
 }
 
-/// Experimental: Informs the end user about the state of the server
-///
-/// [Rust Analyzer Specification](https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/lsp-extensions.md#server-status)
-#[derive(Debug)]
-pub enum ServerStatus {}
-
-/// Other(String) variant to handle unknown values due to this still being experimental
-#[derive(Debug, PartialEq, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub enum ServerHealthStatus {
-    Ok,
-    Warning,
-    Error,
-    Other(String),
-}
-
-#[derive(Debug, PartialEq, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ServerStatusParams {
-    pub health: ServerHealthStatus,
-    pub message: Option<String>,
-}
-
-impl lsp_types::notification::Notification for ServerStatus {
-    type Params = ServerStatusParams;
-    const METHOD: &'static str = "experimental/serverStatus";
-}
-
 impl LanguageServer {
     /// Starts a language server process.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stderr_capture: Arc<Mutex<Option<String>>>,
         server_id: LanguageServerId,
@@ -335,6 +309,7 @@ impl LanguageServer {
         binary: LanguageServerBinary,
         root_path: &Path,
         code_action_kinds: Option<Vec<CodeActionKind>>,
+        workspace_folders: Arc<Mutex<BTreeSet<Url>>>,
         cx: AsyncApp,
     ) -> Result<Self> {
         let working_dir = if root_path.is_dir() {
@@ -369,6 +344,8 @@ impl LanguageServer {
         let stdin = server.stdin.take().unwrap();
         let stdout = server.stdout.take().unwrap();
         let stderr = server.stderr.take().unwrap();
+        let root_uri = Url::from_file_path(&working_dir)
+            .map_err(|_| anyhow!("{} is not a valid URI", working_dir.display()))?;
         let server = Self::new_internal(
             server_id,
             server_name,
@@ -379,6 +356,8 @@ impl LanguageServer {
             Some(server),
             code_action_kinds,
             binary,
+            root_uri,
+            workspace_folders,
             cx,
             move |notification| {
                 log::info!(
@@ -404,6 +383,8 @@ impl LanguageServer {
         server: Option<Child>,
         code_action_kinds: Option<Vec<CodeActionKind>>,
         binary: LanguageServerBinary,
+        root_uri: Url,
+        workspace_folders: Arc<Mutex<BTreeSet<Url>>>,
         cx: AsyncApp,
         on_unhandled_notification: F,
     ) -> Self
@@ -449,7 +430,7 @@ impl LanguageServer {
             let (stdout, stderr) = futures::join!(stdout_input_task, stderr_input_task);
             stdout.or(stderr)
         });
-        let output_task = cx.background_executor().spawn({
+        let output_task = cx.background_spawn({
             Self::handle_output(
                 stdin,
                 outbound_rx,
@@ -486,7 +467,8 @@ impl LanguageServer {
             io_tasks: Mutex::new(Some((input_task, output_task))),
             output_done_rx: Mutex::new(Some(output_done_rx)),
             server: Arc::new(Mutex::new(server)),
-            workspace_folders: Default::default(),
+            workspace_folders,
+            root_uri,
         }
     }
 
@@ -611,11 +593,21 @@ impl LanguageServer {
     }
 
     pub fn default_initialize_params(&self, cx: &App) -> InitializeParams {
+        let workspace_folders = self
+            .workspace_folders
+            .lock()
+            .iter()
+            .cloned()
+            .map(|uri| WorkspaceFolder {
+                name: Default::default(),
+                uri,
+            })
+            .collect::<Vec<_>>();
         #[allow(deprecated)]
         InitializeParams {
             process_id: None,
             root_path: None,
-            root_uri: None,
+            root_uri: Some(self.root_uri.clone()),
             initialization_options: None,
             capabilities: ClientCapabilities {
                 general: Some(GeneralClientCapabilities {
@@ -659,6 +651,9 @@ impl LanguageServer {
                         ..Default::default()
                     }),
                     apply_edit: Some(true),
+                    execute_command: Some(ExecuteCommandClientCapabilities {
+                        dynamic_registration: Some(false),
+                    }),
                     ..Default::default()
                 }),
                 text_document: Some(TextDocumentClientCapabilities {
@@ -785,7 +780,7 @@ impl LanguageServer {
                 }),
             },
             trace: None,
-            workspace_folders: None,
+            workspace_folders: Some(workspace_folders),
             client_info: release_channel::ReleaseChannel::try_global(cx).map(|release_channel| {
                 ClientInfo {
                     name: release_channel.display_name().to_string(),
@@ -1254,24 +1249,27 @@ impl LanguageServer {
     }
     pub fn set_workspace_folders(&self, folders: BTreeSet<Url>) {
         let mut workspace_folders = self.workspace_folders.lock();
+
+        let old_workspace_folders = std::mem::take(&mut *workspace_folders);
         let added: Vec<_> = folders
-            .iter()
+            .difference(&old_workspace_folders)
             .map(|uri| WorkspaceFolder {
                 uri: uri.clone(),
                 name: String::default(),
             })
             .collect();
 
-        let removed: Vec<_> = std::mem::replace(&mut *workspace_folders, folders)
-            .into_iter()
+        let removed: Vec<_> = old_workspace_folders
+            .difference(&folders)
             .map(|uri| WorkspaceFolder {
                 uri: uri.clone(),
                 name: String::default(),
             })
             .collect();
         let should_notify = !added.is_empty() || !removed.is_empty();
-
         if should_notify {
+            *workspace_folders = folders;
+            drop(workspace_folders);
             let params = DidChangeWorkspaceFoldersParams {
                 event: WorkspaceFoldersChangeEvent { added, removed },
             };
@@ -1385,6 +1383,8 @@ impl FakeLanguageServer {
 
         let server_name = LanguageServerName(name.clone().into());
         let process_name = Arc::from(name.as_str());
+        let root = Self::root_path();
+        let workspace_folders: Arc<Mutex<BTreeSet<Url>>> = Default::default();
         let mut server = LanguageServer::new_internal(
             server_id,
             server_name.clone(),
@@ -1395,6 +1395,8 @@ impl FakeLanguageServer {
             None,
             None,
             binary.clone(),
+            root,
+            workspace_folders.clone(),
             cx.clone(),
             |_| {},
         );
@@ -1412,6 +1414,8 @@ impl FakeLanguageServer {
                     None,
                     None,
                     binary,
+                    Self::root_path(),
+                    workspace_folders,
                     cx.clone(),
                     move |msg| {
                         notifications_tx
@@ -1445,6 +1449,15 @@ impl FakeLanguageServer {
         });
 
         (server, fake)
+    }
+    #[cfg(target_os = "windows")]
+    fn root_path() -> Url {
+        Url::from_file_path("C:/").unwrap()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn root_path() -> Url {
+        Url::from_file_path("/").unwrap()
     }
 }
 

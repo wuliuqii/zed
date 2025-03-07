@@ -73,7 +73,7 @@ impl ZedPredictModal {
     }
 
     fn inline_completions_doc(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        cx.open_url("https://zed.dev/docs/configuring-zed#inline-completions");
+        cx.open_url("https://zed.dev/docs/configuring-zed#disabled-globs");
         cx.notify();
 
         onboarding_event!("Docs Link Clicked");
@@ -248,7 +248,7 @@ impl Render for ZedPredictModal {
                                     .bg(cx.theme().colors().editor_background)
                                     .border_1()
                                     .border_color(border_color)
-                                    .rounded_md()
+                                    .rounded_sm()
                                     .font(theme::ThemeSettings::get_global(cx).buffer_font.clone())
                                     .text_size(TextSize::XSmall.rems(cx))
                                     .text_color(text_color)
@@ -395,7 +395,7 @@ impl Render for ZedPredictModal {
                                 v_flex()
                                     .mt_2()
                                     .p_2()
-                                    .rounded_md()
+                                    .rounded_sm()
                                     .bg(cx.theme().colors().editor_background.opacity(0.5))
                                     .border_1()
                                     .border_color(cx.theme().colors().border_variant)
