@@ -281,7 +281,6 @@ pub(crate) struct WaylandWindowStatePtr {
 }
 
 impl WaylandWindowState {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         handle: AnyWindowHandle,
         wl_surface: wl_surface::WlSurface,
