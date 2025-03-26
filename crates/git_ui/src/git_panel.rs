@@ -46,7 +46,7 @@ use panel::{
     panel_icon_button, PanelHeader,
 };
 use project::{
-    git::{GitEvent, Repository},
+    git_store::{GitEvent, Repository},
     Fs, Project, ProjectPath,
 };
 use serde::{Deserialize, Serialize};
@@ -2786,7 +2786,7 @@ impl GitPanel {
                     panel_button(change_string)
                         .color(Color::Muted)
                         .tooltip(Tooltip::for_action_title_in(
-                            "Open diff",
+                            "Open Diff",
                             &Diff,
                             &self.focus_handle,
                         ))
@@ -4474,7 +4474,7 @@ mod tests {
         )
         .await;
 
-        fs.set_status_for_repo_via_git_operation(
+        fs.set_status_for_repo(
             Path::new(path!("/root/zed/.git")),
             &[
                 (

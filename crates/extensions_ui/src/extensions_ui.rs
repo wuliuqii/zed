@@ -12,9 +12,9 @@ use editor::{Editor, EditorElement, EditorStyle};
 use extension_host::{ExtensionManifest, ExtensionOperation, ExtensionStore};
 use fuzzy::{match_strings, StringMatchCandidate};
 use gpui::{
-    actions, uniform_list, Action, App, ClipboardItem, Context, Entity, EventEmitter, Flatten,
-    Focusable, InteractiveElement, KeyContext, ParentElement, Render, Styled, Task, TextStyle,
-    UniformListScrollHandle, WeakEntity, Window,
+    actions, point, uniform_list, Action, App, ClipboardItem, Context, Entity, EventEmitter,
+    Flatten, Focusable, InteractiveElement, KeyContext, ParentElement, Render, Styled, Task,
+    TextStyle, UniformListScrollHandle, WeakEntity, Window,
 };
 use num_format::{Locale, ToFormattedString};
 use project::DirectoryLister;
@@ -22,12 +22,16 @@ use release_channel::ReleaseChannel;
 use settings::Settings;
 use strum::IntoEnumIterator as _;
 use theme::ThemeSettings;
-use ui::{prelude::*, CheckboxWithLabel, ContextMenu, PopoverMenu, ToggleButton, Tooltip};
+use ui::{
+    prelude::*, CheckboxWithLabel, ContextMenu, PopoverMenu, ScrollableHandle, Scrollbar,
+    ScrollbarState, ToggleButton, Tooltip,
+};
 use vim_mode_setting::VimModeSetting;
 use workspace::{
     item::{Item, ItemEvent},
     Workspace, WorkspaceId,
 };
+use zed_actions::ExtensionCategoryFilter;
 
 use crate::components::{ExtensionCard, FeatureUpsell};
 use crate::extension_version_selector::{
@@ -42,26 +46,53 @@ pub fn init(cx: &mut App) {
             return;
         };
         workspace
-            .register_action(move |workspace, _: &zed_actions::Extensions, window, cx| {
-                let existing = workspace
-                    .active_pane()
-                    .read(cx)
-                    .items()
-                    .find_map(|item| item.downcast::<ExtensionsPage>());
+            .register_action(
+                move |workspace, action: &zed_actions::Extensions, window, cx| {
+                    let provides_filter = action.category_filter.map(|category| match category {
+                        ExtensionCategoryFilter::Themes => ExtensionProvides::Themes,
+                        ExtensionCategoryFilter::IconThemes => ExtensionProvides::IconThemes,
+                        ExtensionCategoryFilter::Languages => ExtensionProvides::Languages,
+                        ExtensionCategoryFilter::Grammars => ExtensionProvides::Grammars,
+                        ExtensionCategoryFilter::LanguageServers => {
+                            ExtensionProvides::LanguageServers
+                        }
+                        ExtensionCategoryFilter::ContextServers => {
+                            ExtensionProvides::ContextServers
+                        }
+                        ExtensionCategoryFilter::SlashCommands => ExtensionProvides::SlashCommands,
+                        ExtensionCategoryFilter::IndexedDocsProviders => {
+                            ExtensionProvides::IndexedDocsProviders
+                        }
+                        ExtensionCategoryFilter::Snippets => ExtensionProvides::Snippets,
+                    });
 
-                if let Some(existing) = existing {
-                    workspace.activate_item(&existing, true, true, window, cx);
-                } else {
-                    let extensions_page = ExtensionsPage::new(workspace, window, cx);
-                    workspace.add_item_to_active_pane(
-                        Box::new(extensions_page),
-                        None,
-                        true,
-                        window,
-                        cx,
-                    )
-                }
-            })
+                    let existing = workspace
+                        .active_pane()
+                        .read(cx)
+                        .items()
+                        .find_map(|item| item.downcast::<ExtensionsPage>());
+
+                    if let Some(existing) = existing {
+                        if provides_filter.is_some() {
+                            existing.update(cx, |extensions_page, cx| {
+                                extensions_page.change_provides_filter(provides_filter, cx);
+                            });
+                        }
+
+                        workspace.activate_item(&existing, true, true, window, cx);
+                    } else {
+                        let extensions_page =
+                            ExtensionsPage::new(workspace, provides_filter, window, cx);
+                        workspace.add_item_to_active_pane(
+                            Box::new(extensions_page),
+                            None,
+                            true,
+                            window,
+                            cx,
+                        )
+                    }
+                },
+            )
             .register_action(move |workspace, _: &InstallDevExtension, window, cx| {
                 let store = ExtensionStore::global(cx);
                 let prompt = workspace.prompt_for_open_path(
@@ -229,11 +260,13 @@ pub struct ExtensionsPage {
     _subscriptions: [gpui::Subscription; 2],
     extension_fetch_task: Option<Task<()>>,
     upsells: BTreeSet<Feature>,
+    scrollbar_state: ScrollbarState,
 }
 
 impl ExtensionsPage {
     pub fn new(
         workspace: &Workspace,
+        provides_filter: Option<ExtensionProvides>,
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Entity<Self> {
@@ -268,22 +301,25 @@ impl ExtensionsPage {
             });
             cx.subscribe(&query_editor, Self::on_query_change).detach();
 
+            let scroll_handle = UniformListScrollHandle::new();
+
             let mut this = Self {
                 workspace: workspace.weak_handle(),
-                list: UniformListScrollHandle::new(),
+                list: scroll_handle.clone(),
                 is_fetching_extensions: false,
                 filter: ExtensionFilter::All,
                 dev_extension_entries: Vec::new(),
                 filtered_remote_extension_indices: Vec::new(),
                 remote_extension_entries: Vec::new(),
                 query_contains_error: false,
-                provides_filter: None,
+                provides_filter,
                 extension_fetch_task: None,
                 _subscriptions: subscriptions,
                 query_editor,
                 upsells: BTreeSet::default(),
+                scrollbar_state: ScrollbarState::new(scroll_handle),
             };
-            this.fetch_extensions(None, None, cx);
+            this.fetch_extensions(None, Some(BTreeSet::from_iter(this.provides_filter)), cx);
             this
         })
     }
@@ -377,6 +413,7 @@ impl ExtensionsPage {
                 })
                 .map(|(ix, _)| ix),
         );
+        self.list.set_offset(point(px(0.), px(0.)));
         cx.notify();
     }
 
@@ -583,6 +620,7 @@ impl ExtensionsPage {
             self.buttons_for_entry(extension, &status, has_dev_extension, cx);
         let version = extension.manifest.version.clone();
         let repository_url = extension.manifest.repository.clone();
+        let authors = extension.manifest.authors.clone();
 
         let installed_version = match status {
             ExtensionStatus::Installed(installed_version) => Some(installed_version),
@@ -720,6 +758,7 @@ impl ExtensionsPage {
                                     Some(Self::render_remote_extension_context_menu(
                                         &this,
                                         extension_id.clone(),
+                                        authors.clone(),
                                         window,
                                         cx,
                                     ))
@@ -732,6 +771,7 @@ impl ExtensionsPage {
     fn render_remote_extension_context_menu(
         this: &Entity<Self>,
         extension_id: Arc<str>,
+        authors: Vec<String>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<ContextMenu> {
@@ -751,6 +791,12 @@ impl ExtensionsPage {
                     let extension_id = extension_id.clone();
                     move |_, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(extension_id.to_string()));
+                    }
+                })
+                .entry("Copy Author Info", None, {
+                    let authors = authors.clone();
+                    move |_, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(authors.join(", ")));
                     }
                 })
         });
@@ -968,6 +1014,15 @@ impl ExtensionsPage {
         self.refresh_feature_upsells(cx);
     }
 
+    pub fn change_provides_filter(
+        &mut self,
+        provides_filter: Option<ExtensionProvides>,
+        cx: &mut Context<Self>,
+    ) {
+        self.provides_filter = provides_filter;
+        self.refresh_search(cx);
+    }
+
     fn fetch_extensions_debounced(&mut self, cx: &mut Context<ExtensionsPage>) {
         self.extension_fetch_task = Some(cx.spawn(async move |this, cx| {
             let search = this
@@ -1155,8 +1210,7 @@ impl ExtensionsPage {
                     let this = this.clone();
                     move |_window, cx| {
                         this.update(cx, |this, cx| {
-                            this.provides_filter = None;
-                            this.refresh_search(cx);
+                            this.change_provides_filter(None, cx);
                         });
                     }
                 },
@@ -1174,8 +1228,8 @@ impl ExtensionsPage {
                         let this = this.clone();
                         move |_window, cx| {
                             this.update(cx, |this, cx| {
+                                this.change_provides_filter(Some(provides), cx);
                                 this.provides_filter = Some(provides);
-                                this.refresh_search(cx);
                             });
                         }
                     },
@@ -1290,25 +1344,46 @@ impl Render for ExtensionsPage {
                     ),
             )
             .child(self.render_feature_upsells(cx))
-            .child(v_flex().px_4().size_full().overflow_y_hidden().map(|this| {
-                let mut count = self.filtered_remote_extension_indices.len();
-                if self.filter.include_dev_extensions() {
-                    count += self.dev_extension_entries.len();
-                }
+            .child(
+                v_flex()
+                    .pl_4()
+                    .pr_6()
+                    .size_full()
+                    .overflow_y_hidden()
+                    .map(|this| {
+                        let mut count = self.filtered_remote_extension_indices.len();
+                        if self.filter.include_dev_extensions() {
+                            count += self.dev_extension_entries.len();
+                        }
 
-                if count == 0 {
-                    return this.py_4().child(self.render_empty_state(cx));
-                }
+                        if count == 0 {
+                            return this.py_4().child(self.render_empty_state(cx));
+                        }
 
-                let extensions_page = cx.entity().clone();
-                let scroll_handle = self.list.clone();
-                this.child(
-                    uniform_list(extensions_page, "entries", count, Self::render_extensions)
-                        .flex_grow()
-                        .pb_4()
-                        .track_scroll(scroll_handle),
-                )
-            }))
+                        let extensions_page = cx.entity().clone();
+                        let scroll_handle = self.list.clone();
+                        this.child(
+                            uniform_list(
+                                extensions_page,
+                                "entries",
+                                count,
+                                Self::render_extensions,
+                            )
+                            .flex_grow()
+                            .pb_4()
+                            .track_scroll(scroll_handle),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .right_1()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(12.))
+                                .children(Scrollbar::vertical(self.scrollbar_state.clone())),
+                        )
+                    }),
+            )
     }
 }
 

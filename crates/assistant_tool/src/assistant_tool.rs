@@ -1,12 +1,13 @@
 mod tool_registry;
 mod tool_working_set;
 
+use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
 
 use anyhow::Result;
 use collections::{HashMap, HashSet};
-use gpui::Context;
-use gpui::{App, Entity, SharedString, Task};
+use gpui::{App, Context, Entity, SharedString, Task};
+use icons::IconName;
 use language::Buffer;
 use language_model::LanguageModelRequestMessage;
 use project::Project;
@@ -34,15 +35,25 @@ pub trait Tool: 'static + Send + Sync {
     /// Returns the description of the tool.
     fn description(&self) -> String;
 
+    /// Returns the icon for the tool.
+    fn icon(&self) -> IconName;
+
     /// Returns the source of the tool.
     fn source(&self) -> ToolSource {
         ToolSource::Native
     }
 
+    /// Returns true iff the tool needs the users's confirmation
+    /// before having permission to run.
+    fn needs_confirmation(&self) -> bool;
+
     /// Returns the JSON schema that describes the tool's input.
     fn input_schema(&self) -> serde_json::Value {
         serde_json::Value::Object(serde_json::Map::default())
     }
+
+    /// Returns markdown to be displayed in the UI for this tool.
+    fn ui_text(&self, input: &serde_json::Value) -> String;
 
     /// Runs the tool with the provided input.
     fn run(
@@ -53,6 +64,12 @@ pub trait Tool: 'static + Send + Sync {
         action_log: Entity<ActionLog>,
         cx: &mut App,
     ) -> Task<Result<String>>;
+}
+
+impl Debug for dyn Tool {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Tool").field("name", &self.name()).finish()
+    }
 }
 
 /// Tracks actions performed by tools in a thread

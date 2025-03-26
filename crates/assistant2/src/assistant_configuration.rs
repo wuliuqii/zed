@@ -1,3 +1,5 @@
+mod add_context_server_modal;
+
 use std::sync::Arc;
 
 use assistant_tool::{ToolSource, ToolWorkingSet};
@@ -7,7 +9,11 @@ use gpui::{Action, AnyView, App, Entity, EventEmitter, FocusHandle, Focusable, S
 use language_model::{LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry};
 use ui::{prelude::*, Disclosure, Divider, DividerColor, ElevationIndex, Indicator, Switch};
 use util::ResultExt as _;
-use zed_actions::assistant::DeployPromptLibrary;
+use zed_actions::ExtensionCategoryFilter;
+
+pub(crate) use add_context_server_modal::AddContextServerModal;
+
+use crate::AddContextServer;
 
 pub struct AssistantConfiguration {
     focus_handle: FocusHandle,
@@ -167,8 +173,7 @@ impl AssistantConfiguration {
 
         v_flex()
             .p(DynamicSpacing::Base16.rems(cx))
-            .mt_1()
-            .gap_6()
+            .gap_2()
             .flex_1()
             .child(
                 v_flex()
@@ -192,6 +197,7 @@ impl AssistantConfiguration {
                 let tool_count = tools.len();
 
                 v_flex()
+                    .id(SharedString::from(context_server.id()))
                     .border_1()
                     .rounded_sm()
                     .border_color(cx.theme().colors().border)
@@ -292,6 +298,50 @@ impl AssistantConfiguration {
                         )))
                     })
             }))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        h_flex().w_full().child(
+                            Button::new("add-context-server", "Add Context Server")
+                                .style(ButtonStyle::Filled)
+                                .layer(ElevationIndex::ModalSurface)
+                                .full_width()
+                                .icon(IconName::Plus)
+                                .icon_size(IconSize::Small)
+                                .icon_position(IconPosition::Start)
+                                .on_click(|_event, window, cx| {
+                                    window.dispatch_action(AddContextServer.boxed_clone(), cx)
+                                }),
+                        ),
+                    )
+                    .child(
+                        h_flex().w_full().child(
+                            Button::new(
+                                "install-context-server-extensions",
+                                "Install Context Server Extensions",
+                            )
+                            .style(ButtonStyle::Filled)
+                            .layer(ElevationIndex::ModalSurface)
+                            .full_width()
+                            .icon(IconName::DatabaseZap)
+                            .icon_size(IconSize::Small)
+                            .icon_position(IconPosition::Start)
+                            .on_click(|_event, window, cx| {
+                                window.dispatch_action(
+                                    zed_actions::Extensions {
+                                        category_filter: Some(
+                                            ExtensionCategoryFilter::ContextServers,
+                                        ),
+                                    }
+                                    .boxed_clone(),
+                                    cx,
+                                )
+                            }),
+                        ),
+                    ),
+            )
     }
 }
 
@@ -305,33 +355,6 @@ impl Render for AssistantConfiguration {
             .bg(cx.theme().colors().panel_background)
             .size_full()
             .overflow_y_scroll()
-            .child(
-                v_flex()
-                    .p(DynamicSpacing::Base16.rems(cx))
-                    .gap_2()
-                    .child(
-                        v_flex()
-                            .gap_0p5()
-                            .child(Headline::new("Prompt Library").size(HeadlineSize::Small))
-                            .child(
-                                Label::new("Create reusable prompts and tag which ones you want sent in every LLM interaction.")
-                                    .color(Color::Muted),
-                            ),
-                    )
-                    .child(
-                        Button::new("open-prompt-library", "Open Prompt Library")
-                            .style(ButtonStyle::Filled)
-                            .layer(ElevationIndex::ModalSurface)
-                            .full_width()
-                            .icon(IconName::Book)
-                            .icon_size(IconSize::Small)
-                            .icon_position(IconPosition::Start)
-                            .on_click(|_event, window, cx| {
-                                window.dispatch_action(DeployPromptLibrary.boxed_clone(), cx)
-                            }),
-                    ),
-            )
-            .child(Divider::horizontal().color(DividerColor::Border))
             .child(self.render_context_servers_section(cx))
             .child(Divider::horizontal().color(DividerColor::Border))
             .child(
