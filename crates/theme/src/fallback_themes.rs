@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use gpui::{hsla, FontStyle, FontWeight, HighlightStyle, Hsla, WindowBackgroundAppearance};
+use gpui::{FontStyle, FontWeight, HighlightStyle, Hsla, WindowBackgroundAppearance, hsla};
 
 use crate::{
-    default_color_scales, AccentColors, Appearance, PlayerColors, StatusColors,
-    StatusColorsRefinement, SyntaxTheme, SystemColors, Theme, ThemeColors, ThemeFamily,
-    ThemeStyles,
+    AccentColors, Appearance, PlayerColors, StatusColors, StatusColorsRefinement, SyntaxTheme,
+    SystemColors, Theme, ThemeColors, ThemeFamily, ThemeStyles, default_color_scales,
 };
 
 /// The default theme family for Zed.
@@ -202,6 +201,23 @@ pub(crate) fn zed_default_dark() -> Theme {
                 version_control_renamed: MODIFIED_COLOR,
                 version_control_conflict: crate::orange().light().step_12(),
                 version_control_ignored: crate::gray().light().step_12(),
+                version_control_conflict_ours_background: crate::green()
+                    .light()
+                    .step_12()
+                    .alpha(0.5),
+                version_control_conflict_theirs_background: crate::blue()
+                    .light()
+                    .step_12()
+                    .alpha(0.5),
+                version_control_conflict_ours_marker_background: crate::green()
+                    .light()
+                    .step_12()
+                    .alpha(0.7),
+                version_control_conflict_theirs_marker_background: crate::blue()
+                    .light()
+                    .step_12()
+                    .alpha(0.7),
+                version_control_conflict_divider_background: Hsla::default(),
             },
             status: StatusColors {
                 conflict: yellow,

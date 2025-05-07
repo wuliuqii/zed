@@ -4,9 +4,9 @@ use anyhow::Result;
 use gpui::{FontStyle, FontWeight, HighlightStyle, Hsla, WindowBackgroundAppearance};
 use indexmap::IndexMap;
 use palette::FromColor;
-use schemars::gen::SchemaGenerator;
-use schemars::schema::{Schema, SchemaObject};
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::{Schema, SchemaObject};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -586,6 +586,26 @@ pub struct ThemeColorsContent {
     /// Ignored version control color.
     #[serde(rename = "version_control.ignored")]
     pub version_control_ignored: Option<String>,
+
+    /// Background color for row highlights of "ours" regions in merge conflicts.
+    #[serde(rename = "version_control.conflict.ours_background")]
+    pub version_control_conflict_ours_background: Option<String>,
+
+    /// Background color for row highlights of "theirs" regions in merge conflicts.
+    #[serde(rename = "version_control.conflict.theirs_background")]
+    pub version_control_conflict_theirs_background: Option<String>,
+
+    /// Background color for row highlights of "ours" conflict markers in merge conflicts.
+    #[serde(rename = "version_control.conflict.ours_marker_background")]
+    pub version_control_conflict_ours_marker_background: Option<String>,
+
+    /// Background color for row highlights of "theirs" conflict markers in merge conflicts.
+    #[serde(rename = "version_control.conflict.theirs_marker_background")]
+    pub version_control_conflict_theirs_marker_background: Option<String>,
+
+    /// Background color for row highlights of the "ours"/"theirs" divider in merge conflicts.
+    #[serde(rename = "version_control.conflict.divider_background")]
+    pub version_control_conflict_divider_background: Option<String>,
 }
 
 impl ThemeColorsContent {
@@ -1037,6 +1057,26 @@ impl ThemeColorsContent {
                 .and_then(|color| try_parse_color(color).ok())
                 // Fall back to `conflict`, for backwards compatibility.
                 .or(status_colors.ignored),
+            version_control_conflict_ours_background: self
+                .version_control_conflict_ours_background
+                .as_ref()
+                .and_then(|color| try_parse_color(color).ok()),
+            version_control_conflict_theirs_background: self
+                .version_control_conflict_theirs_background
+                .as_ref()
+                .and_then(|color| try_parse_color(color).ok()),
+            version_control_conflict_ours_marker_background: self
+                .version_control_conflict_ours_marker_background
+                .as_ref()
+                .and_then(|color| try_parse_color(color).ok()),
+            version_control_conflict_theirs_marker_background: self
+                .version_control_conflict_theirs_marker_background
+                .as_ref()
+                .and_then(|color| try_parse_color(color).ok()),
+            version_control_conflict_divider_background: self
+                .version_control_conflict_divider_background
+                .as_ref()
+                .and_then(|color| try_parse_color(color).ok()),
         }
     }
 }

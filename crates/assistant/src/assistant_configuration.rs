@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use collections::HashMap;
-use gpui::{canvas, AnyView, App, EventEmitter, FocusHandle, Focusable, Subscription};
+use gpui::{AnyView, App, EventEmitter, FocusHandle, Focusable, Subscription, canvas};
 use language_model::{LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry};
-use ui::{prelude::*, ElevationIndex};
+use ui::{ElevationIndex, prelude::*};
 use workspace::Item;
 
 pub struct ConfigurationView {
@@ -193,7 +193,7 @@ impl Focusable for ConfigurationView {
 impl Item for ConfigurationView {
     type Event = ConfigurationViewEvent;
 
-    fn tab_content_text(&self, _window: &Window, _cx: &App) -> Option<SharedString> {
-        Some("Configuration".into())
+    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+        "Configuration".into()
     }
 }

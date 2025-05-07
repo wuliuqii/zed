@@ -1,13 +1,13 @@
 use crate::{
-    worktree_store::{WorktreeStore, WorktreeStoreEvent},
     Project, ProjectEntryId, ProjectItem, ProjectPath,
+    worktree_store::{WorktreeStore, WorktreeStoreEvent},
 };
-use anyhow::{anyhow, Context as _, Result};
-use collections::{hash_map, HashMap, HashSet};
-use futures::{channel::oneshot, StreamExt};
+use anyhow::{Context as _, Result, anyhow};
+use collections::{HashMap, HashSet, hash_map};
+use futures::{StreamExt, channel::oneshot};
 use gpui::{
-    hash, prelude::*, App, AsyncApp, Context, Entity, EventEmitter, Img, Subscription, Task,
-    WeakEntity,
+    App, AsyncApp, Context, Entity, EventEmitter, Img, Subscription, Task, WeakEntity, hash,
+    prelude::*,
 };
 pub use image::ImageFormat;
 use image::{ExtendedColorType, GenericImageView, ImageReader};
@@ -210,38 +210,41 @@ impl ImageItem {
     }
 }
 
+pub fn is_image_file(project: &Entity<Project>, path: &ProjectPath, cx: &App) -> bool {
+    let ext = util::maybe!({
+        let worktree_abs_path = project
+            .read(cx)
+            .worktree_for_id(path.worktree_id, cx)?
+            .read(cx)
+            .abs_path();
+        path.path
+            .extension()
+            .or_else(|| worktree_abs_path.extension())
+            .and_then(OsStr::to_str)
+            .map(str::to_lowercase)
+    });
+
+    match ext {
+        Some(ext) => Img::extensions().contains(&ext.as_str()) && !ext.contains("svg"),
+        None => false,
+    }
+}
+
 impl ProjectItem for ImageItem {
     fn try_open(
         project: &Entity<Project>,
         path: &ProjectPath,
         cx: &mut App,
     ) -> Option<Task<gpui::Result<Entity<Self>>>> {
-        let path = path.clone();
-        let project = project.clone();
-
-        let worktree_abs_path = project
-            .read(cx)
-            .worktree_for_id(path.worktree_id, cx)?
-            .read(cx)
-            .abs_path();
-
-        // Resolve the file extension from either the worktree path (if it's a single file)
-        // or from the project path's subpath.
-        let ext = worktree_abs_path
-            .extension()
-            .or_else(|| path.path.extension())
-            .and_then(OsStr::to_str)
-            .map(str::to_lowercase)
-            .unwrap_or_default();
-        let ext = ext.as_str();
-
-        // Only open the item if it's a binary image (no SVGs, etc.)
-        // Since we do not have a way to toggle to an editor
-        if Img::extensions().contains(&ext) && !ext.contains("svg") {
-            Some(cx.spawn(async move |cx| {
-                project
-                    .update(cx, |project, cx| project.open_image(path, cx))?
-                    .await
+        if is_image_file(&project, &path, cx) {
+            Some(cx.spawn({
+                let path = path.clone();
+                let project = project.clone();
+                async move |cx| {
+                    project
+                        .update(cx, |project, cx| project.open_image(path, cx))?
+                        .await
+                }
             }))
         } else {
             None
